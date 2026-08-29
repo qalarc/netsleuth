@@ -4,12 +4,16 @@ import {
   Database,
   Globe,
   LayoutDashboard,
+  LoaderCircle,
   MonitorSmartphone,
+  Play,
   Radar,
   Radio,
+  Square,
   TriangleAlert,
 } from "lucide-react";
 import { StoreProvider, useStore, type View } from "./store";
+import * as api from "./lib/api";
 import { truncateMiddle } from "./lib/format";
 import type { CaptureState } from "./types";
 import { Toasts } from "./components/Toast";
@@ -103,6 +107,75 @@ function StatusPill() {
   );
 }
 
+/**
+ * Primary sidebar action: one-click start of the most-recent source (or a
+ * shortcut to the Capture view on a cold start) / stop while running.
+ */
+function StartStopButton() {
+  const {
+    status,
+    backendOnline,
+    recentSources,
+    startingQuick,
+    startSource,
+    setView,
+    refreshStatus,
+    toast,
+  } = useStore();
+
+  const running = status?.state === "running" || status?.state === "starting";
+  const recent = recentSources[0];
+  const offline = backendOnline === false;
+
+  if (running) {
+    return (
+      <button
+        type="button"
+        onClick={() =>
+          void (async () => {
+            const r = await api.stopCapture();
+            if (r !== undefined) {
+              await refreshStatus();
+              toast("Capture stopped");
+            }
+          })()
+        }
+        title="Stop the running capture"
+        className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-rose-400/30 bg-rose-400/10 px-3 py-2 text-sm font-semibold text-rose-300 transition-colors hover:border-rose-400/50 hover:bg-rose-400/15"
+      >
+        <Square className="h-4 w-4" />
+        Stop
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      disabled={offline || startingQuick}
+      onClick={() => {
+        if (recent) void startSource(recent.source);
+        else setView("capture");
+      }}
+      title={
+        offline
+          ? "Backend offline — run NetSleuth as the desktop app"
+          : recent
+            ? `Restart ${recent.desc}`
+            : "Open the Capture view to pick a source"
+      }
+      className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-400 px-3 py-2 text-sm font-semibold text-zinc-950 transition-colors hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      {startingQuick ? (
+        <LoaderCircle className="h-4 w-4 animate-spin" />
+      ) : (
+        <Play className="h-4 w-4" />
+      )}
+      {startingQuick ? "Starting…" : "Start monitoring"}
+    </button>
+  );
+}
+
 function Sidebar() {
   const { view, setView, status } = useStore();
   return (
@@ -146,6 +219,7 @@ function Sidebar() {
       {/* Status + footer */}
       <div className="space-y-3 border-t border-zinc-800/80 px-4 py-4">
         <StatusPill />
+        <StartStopButton />
         <div className="flex items-start gap-1.5 text-[10px] leading-relaxed text-zinc-600">
           <Database className="mt-px h-3 w-3 shrink-0" />
           <div className="min-w-0">

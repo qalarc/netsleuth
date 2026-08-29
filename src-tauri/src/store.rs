@@ -594,3 +594,33 @@ pub fn device_count(conn: &Connection) -> u64 {
         .map(|c| c as u64)
         .unwrap_or(0)
 }
+
+// ---------------------------------------------------------------------------
+// Recent capture sources (quick start)
+// ---------------------------------------------------------------------------
+
+const RECENT_KEY: &str = "recent_sources";
+const RECENT_CAP: usize = 6;
+
+/// Insert/update a source as most-recently-used. Dedup by desc, cap at 6.
+pub fn push_recent_source(conn: &Connection, source_json: &str, desc: &str, ts: i64) {
+    let mut arr: Vec<serde_json::Value> = get_meta(conn, RECENT_KEY)
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    arr.retain(|v| v.get("desc").and_then(|d| d.as_str()) != Some(desc));
+    let mut entry = serde_json::Map::new();
+    entry.insert("source".into(), serde_json::from_str::<serde_json::Value>(source_json).unwrap_or(serde_json::Value::Null));
+    entry.insert("desc".into(), serde_json::Value::String(desc.to_string()));
+    entry.insert("last_used".into(), serde_json::Value::Number(ts.into()));
+    arr.insert(0, serde_json::Value::Object(entry));
+    arr.truncate(RECENT_CAP);
+    if let Ok(json) = serde_json::to_string(&arr) {
+        set_meta(conn, RECENT_KEY, &json);
+    }
+}
+
+pub fn get_recent_sources(conn: &Connection) -> Vec<serde_json::Value> {
+    get_meta(conn, RECENT_KEY)
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}

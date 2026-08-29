@@ -103,22 +103,7 @@ pub fn get_status(state: State<'_, AppState>) -> Status {
 
 #[tauri::command]
 pub fn list_interfaces() -> Vec<InterfaceInfo> {
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name == "lo" {
-                continue;
-            }
-            let wireless = e.path().join("phy80211").exists();
-            out.push(InterfaceInfo {
-                desc: if wireless { Some("wireless".into()) } else { None },
-                name,
-            });
-        }
-    }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
+    list_interfaces_impl()
 }
 
 #[tauri::command]
@@ -261,6 +246,14 @@ pub fn start_capture(
         desc: desc.clone(),
         started_at,
     });
+
+    // record for one-click restart (contract v1.1)
+    if let Ok(src_json) = serde_json::to_string(&source) {
+        let rec_desc = desc.clone();
+        state
+            .store
+            .query(move |c| store::push_recent_source(c, &src_json, &rec_desc, started_at));
+    }
 
     {
         let mut c = state.cap.lock().unwrap();
@@ -515,5 +508,201 @@ impl From<crate::engine::FlushPayload> for WriteBatch {
             sites: f.sites,
             events: Vec::new(),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Quick start: network hints + recent sources (contract v1.1)
+// ---------------------------------------------------------------------------
+
+/// Parse `ip route show default` output → (gateway ip, dev).
+fn parse_default_route(output: &str) -> (Option<String>, Option<String>) {
+    for line in output.lines() {
+        if !line.trim_start().starts_with("default") {
+            continue;
+        }
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        let mut gw = None;
+        let mut dev = None;
+        let mut i = 0;
+        while i + 1 < toks.len() {
+            match toks[i] {
+                "via" => gw = Some(toks[i + 1].to_string()),
+                "dev" => dev = Some(toks[i + 1].to_string()),
+                _ => {}
+            }
+            i += 1;
+        }
+        if gw.is_some() || dev.is_some() {
+            return (gw, dev);
+        }
+    }
+    (None, None)
+}
+
+/// Parse `ip -o -4 addr show` output → LAN IPv4 addresses (with masks stripped).
+fn parse_lan_ips(output: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in output.lines() {
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        let mut i = 0;
+        while i + 1 < toks.len() {
+            if toks[i] == "inet" {
+                let addr = toks[i + 1].split('/').next().unwrap_or("").to_string();
+                // skip loopback; keep private+tailscale-style ranges as-is (raw list)
+                if !addr.starts_with("127.") && !addr.is_empty() {
+                    out.push(addr);
+                }
+            }
+            i += 1;
+        }
+    }
+    out
+}
+
+fn list_interfaces_impl() -> Vec<InterfaceInfo> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name == "lo" {
+                continue;
+            }
+            let wireless = e.path().join("phy80211").exists();
+            out.push(InterfaceInfo {
+                desc: if wireless { Some("wireless".into()) } else { None },
+                name,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+#[tauri::command]
+pub fn get_network_hints() -> NetworkHints {
+    let route = std::process::Command::new("ip")
+        .args(["route", "show", "default"])
+        .output();
+    let (gw, dev) = match route {
+        Ok(o) if o.status.success() => {
+            parse_default_route(&String::from_utf8_lossy(&o.stdout))
+        }
+        _ => (None, None),
+    };
+    let lan_ips = match std::process::Command::new("ip")
+        .args(["-o", "-4", "addr", "show"])
+        .output()
+    {
+        Ok(o) if o.status.success() => parse_lan_ips(&String::from_utf8_lossy(&o.stdout)),
+        _ => Vec::new(),
+    };
+    NetworkHints {
+        default_gateway_ip: gw,
+        default_interface: dev,
+        lan_ips,
+        interfaces: list_interfaces_impl(),
+    }
+}
+
+#[tauri::command]
+pub fn get_recent_sources(state: State<'_, AppState>) -> Vec<RecentSource> {
+    let vals = state.store.query(|c| store::get_recent_sources(c));
+    vals.into_iter()
+        .filter_map(|v| {
+            let last_used = v.get("last_used").and_then(|t| t.as_i64()).unwrap_or(0);
+            let desc = v
+                .get("desc")
+                .and_then(|d| d.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let source = v
+                .get("source")
+                .and_then(|s| serde_json::from_value::<CaptureSource>(s.clone()).ok())?;
+            Some(RecentSource {
+                source,
+                desc,
+                last_used,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod quick_start_tests {
+    use super::*;
+
+    #[test]
+    fn parses_routes() {
+        let (gw, dev) = parse_default_route(
+            "default via 192.168.1.1 dev wlp3s0 proto dhcp src 192.168.1.42 metric 600\n",
+        );
+        assert_eq!(gw.as_deref(), Some("192.168.1.1"));
+        assert_eq!(dev.as_deref(), Some("wlp3s0"));
+
+        let (gw, dev) = parse_default_route("192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.5\n");
+        assert_eq!(gw, None);
+        assert_eq!(dev, None);
+
+        let (gw, _) = parse_default_route("default dev tailscale0 scope link\n");
+        assert_eq!(gw, None);
+    }
+
+    #[test]
+    fn parses_lan_ips() {
+        let ips = parse_lan_ips(
+            "2: wlp3s0    inet 192.168.1.42/24 brd 192.168.1.255 scope global wlp3s0\\       valid_lft forever\n1: lo    inet 127.0.0.1/8 scope host lo\n",
+        );
+        assert_eq!(ips, vec!["192.168.1.42".to_string()]);
+    }
+
+    #[test]
+    fn recent_sources_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("ns-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let db = dir.join("t.db");
+        let h = crate::store::StoreHandle::open(&db).unwrap();
+        let src = serde_json::to_string(&CaptureSource::Local {
+            interface: "wlp3s0".into(),
+            promiscuous: false,
+        })
+        .unwrap();
+        h.query(move |c| crate::store::push_recent_source(c, &src, "local wlp3s0", 100));
+        let src2 = serde_json::to_string(&CaptureSource::Ssh {
+            host: "192.168.1.1".into(),
+            user: "root".into(),
+            port: 22,
+            interface: "br-lan".into(),
+            bpf: None,
+        })
+        .unwrap();
+        h.query(move |c| crate::store::push_recent_source(c, &src2, "ssh root@192.168.1.1 (br-lan)", 200));
+        let got: Vec<String> = h
+            .query(|c| crate::store::get_recent_sources(c))
+            .iter()
+            .filter_map(|v| v.get("desc").and_then(|d| d.as_str()).map(|s| s.to_string()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                "ssh root@192.168.1.1 (br-lan)".to_string(),
+                "local wlp3s0".to_string()
+            ]
+        );
+        // dedup: push local again → moves to front, no duplicate
+        let src3 = serde_json::to_string(&CaptureSource::Local {
+            interface: "wlp3s0".into(),
+            promiscuous: false,
+        })
+        .unwrap();
+        h.query(move |c| crate::store::push_recent_source(c, &src3, "local wlp3s0", 300));
+        let got: Vec<String> = h
+            .query(|c| crate::store::get_recent_sources(c))
+            .iter()
+            .filter_map(|v| v.get("desc").and_then(|d| d.as_str()).map(|s| s.to_string()))
+            .collect();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0], "local wlp3s0");
+        let _ = std::fs::remove_file(&db);
     }
 }

@@ -183,3 +183,33 @@ interface LiveDevice {
 - `online` = packet seen from/to device within 60 s of "now" (running capture).
 - Site `domain` = last two DNS labels of `host` (min 2 labels).
 - Errors from `invoke` arrive as rejected promises with a string message.
+
+---
+
+## Additions — v1.1 (quick start)
+
+### 17. `get_network_hints` → `NetworkHints`
+```ts
+interface NetworkHints {
+  default_gateway_ip: string | null;  // from `ip route show default` ("via X")
+  default_interface: string | null;   // from same line ("dev Y")
+  lan_ips: string[];                  // this machine's non-loopback IPv4s
+  interfaces: InterfaceInfo[];        // same as list_interfaces
+}
+```
+
+### 18. `get_recent_sources` → `Vec<RecentSource>`
+```ts
+interface RecentSource {
+  source: CaptureSource;   // restartable with start_capture(source)
+  desc: string;            // source.describe() at the time it ran
+  last_used: number;       // unix s
+}
+```
+Semantics: every successful `start_capture` records the source as
+most-recently-used (deduped by `desc`, newest first, max 6 entries).
+
+### Settings change
+`AppSettings` gains `auto_resume: boolean` (default `false`). When true, the
+frontend starts the most-recent source automatically once on app launch
+(after status is confirmed `idle`). One attempt per launch, no retries.

@@ -24,7 +24,24 @@ pub struct InterfaceInfo {
     pub desc: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// Environment hints for the quick-start UI: detected gateway, interface, LAN IPs.
+#[derive(Debug, Clone, Serialize)]
+pub struct NetworkHints {
+    pub default_gateway_ip: Option<String>,
+    pub default_interface: Option<String>,
+    pub lan_ips: Vec<String>,
+    pub interfaces: Vec<InterfaceInfo>,
+}
+
+/// A previously-used capture source offered for one-click restart.
+#[derive(Debug, Clone, Serialize)]
+pub struct RecentSource {
+    pub source: CaptureSource,
+    pub desc: String,
+    pub last_used: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum CaptureSource {
     Local {
@@ -186,6 +203,9 @@ pub struct AppSettings {
     pub dns_doh_note: bool,
     #[serde(default = "default_retention")]
     pub retention_days: u32,
+    /// Start the most-recent capture source automatically on app launch.
+    #[serde(default)]
+    pub auto_resume: bool,
 }
 
 fn default_retention() -> u32 {
@@ -198,6 +218,7 @@ impl Default for AppSettings {
             gateway_mac: None,
             dns_doh_note: true,
             retention_days: 90,
+            auto_resume: false,
         }
     }
 }

@@ -3,7 +3,9 @@
  *
  * Owns: capture Status (from `get_status` + `capture-status` events), the
  * latest LiveUpdate + a 10-minute rolling live series, view navigation state,
- * device slide-over selection, and the toast list.
+ * device slide-over selection, the toast list, and (v1.1) the quick-start
+ * surface — network hints, recent sources, the shared `startSource` path and
+ * the one-shot auto-resume.
  *
  * Degrades gracefully when the backend is unreachable (plain-browser dev):
  * `backendOnline` flips false and the shell shows a banner instead of crashing.
@@ -21,7 +23,15 @@ import {
 import { listen } from "@tauri-apps/api/event";
 
 import * as api from "./lib/api";
-import type { CaptureState, LiveUpdate, Status } from "./types";
+import type {
+  AppSettings,
+  CaptureSource,
+  CaptureState,
+  LiveUpdate,
+  NetworkHints,
+  RecentSource,
+  Status,
+} from "./types";
 
 export type View = "dashboard" | "devices" | "sites" | "history" | "capture";
 
@@ -50,6 +60,26 @@ export interface AppStore {
   /** null = not checked yet; false = backend unreachable (browser dev). */
   backendOnline: boolean | null;
   refreshStatus: () => Promise<void>;
+
+  /** v1.1 quick start — network defaults from `get_network_hints`. */
+  networkHints: NetworkHints | null;
+  /** v1.1 quick start — most-recently-used sources, newest first (≤6). */
+  recentSources: RecentSource[];
+  refreshRecents: () => Promise<void>;
+  /** true while a quick-start `startSource` call is in flight. */
+  startingQuick: boolean;
+  /**
+   * Start a capture source through the shared path: sets the busy flag, calls
+   * `start_capture` (failures surface as error toasts via the api error
+   * listener), refreshes status, and re-reads recents ~1.5 s later (the
+   * backend records the source server-side at start). Returns success.
+   */
+  startSource: (source: CaptureSource) => Promise<boolean>;
+
+  /** v1.1 — app settings (needed for the auto-resume flag + quick panel). */
+  settings: AppSettings | null;
+  /** Optimistically flip `auto_resume`; revert + error toast on failure. */
+  setAutoResume: (value: boolean) => Promise<boolean>;
 
   live: LiveUpdate | null;
   liveSeries: readonly LivePoint[];
@@ -92,6 +122,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status | null>(null);
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
 
+  const [networkHints, setNetworkHints] = useState<NetworkHints | null>(null);
+  const [recentSources, setRecentSources] = useState<RecentSource[]>([]);
+  /** true once the first `get_recent_sources` round-trip finished (ok or not). */
+  const [recentsReady, setRecentsReady] = useState(false);
+  const [startingQuick, setStartingQuick] = useState(false);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+
   const [live, setLive] = useState<LiveUpdate | null>(null);
   const [liveSeries, setLiveSeries] = useState<LivePoint[]>([]);
   const [tick, setTick] = useState(0);
@@ -121,9 +158,74 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const refreshRecents = useCallback(async () => {
+    const r = await api.getRecentSources();
+    // On failure keep whatever we had — a dead backend should not blank the list.
+    if (r) setRecentSources(r);
+    setRecentsReady(true);
+    if (r) setBackendOnline(true);
+  }, []);
+
+  /** Pending post-start recents timers — cleared when the provider unmounts. */
+  const quickTimersRef = useRef<number[]>([]);
+
+  const startSource = useCallback(
+    async (source: CaptureSource): Promise<boolean> => {
+      setStartingQuick(true);
+      const r = await api.startCapture(source);
+      setStartingQuick(false);
+      // Rejections are already surfaced as error toasts by the api error
+      // listener that `cmd()` reports to (exactly once per burst).
+      if (r === undefined) return false;
+      void refreshStatus();
+      // Recording happens server-side at start — re-read shortly after.
+      const t = window.setTimeout(() => void refreshRecents(), 1500);
+      quickTimersRef.current.push(t);
+      return true;
+    },
+    [refreshStatus, refreshRecents],
+  );
+
+  const setAutoResume = useCallback(
+    async (value: boolean): Promise<boolean> => {
+      if (!settings) return false;
+      const prev = settings;
+      const next = { ...settings, auto_resume: value };
+      setSettings(next); // optimistic
+      const r = await api.saveSettings(next);
+      if (r === undefined) {
+        setSettings(prev); // revert on failure (error already toasted)
+        return false;
+      }
+      return true;
+    },
+    [settings],
+  );
+
+  // One auto-resume attempt per launch: only after status, settings AND the
+  // recents list have all loaded, and only when confirmed idle.
+  const autoResumeTriedRef = useRef(false);
+  useEffect(() => {
+    if (autoResumeTriedRef.current) return;
+    if (!status || !settings || !recentsReady) return;
+    autoResumeTriedRef.current = true;
+    if (settings.auto_resume && recentSources.length > 0 && status.state === "idle") {
+      void startSource(recentSources[0].source);
+    }
+  }, [status, settings, recentsReady, recentSources, startSource]);
+
   useEffect(() => {
     api.setApiErrorListener((message) => toast(message, "error"));
     void refreshStatus();
+    void refreshRecents();
+    void (async () => {
+      const s = await api.getAppSettings();
+      if (s) setSettings(s);
+    })();
+    void (async () => {
+      const h = await api.getNetworkHints();
+      if (h) setNetworkHints(h);
+    })();
 
     let disposed = false;
     const unlistens: Array<Promise<() => void>> = [
@@ -140,20 +242,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }),
       safeListen<{ state: CaptureState; message: string | null }>("capture-status", (p) => {
         if (disposed) return;
+        // A capture dying mid-run (e.g. ssh drop) only surfaces here — toast it.
+        if (p.state === "error" && p.message) toast(p.message, "error");
         // Merge for instant pill feedback; a full refetch fills in the details.
         setStatus((prev) =>
           prev ? { ...prev, state: p.state, message: p.message } : prev,
         );
         void refreshStatus();
+        void refreshRecents();
       }),
     ];
 
     return () => {
       disposed = true;
       for (const u of unlistens) void u.then((unlisten) => unlisten());
+      for (const t of quickTimersRef.current) window.clearTimeout(t);
+      quickTimersRef.current = [];
       api.setApiErrorListener(null);
     };
-  }, [refreshStatus, toast]);
+  }, [refreshStatus, refreshRecents, toast]);
 
   const openDevice = useCallback((mac: string) => {
     setView("devices");
@@ -172,6 +279,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       status,
       backendOnline,
       refreshStatus,
+      networkHints,
+      recentSources,
+      refreshRecents,
+      startingQuick,
+      startSource,
+      settings,
+      setAutoResume,
       live,
       liveSeries,
       tick,
@@ -187,6 +301,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       status,
       backendOnline,
       refreshStatus,
+      networkHints,
+      recentSources,
+      refreshRecents,
+      startingQuick,
+      startSource,
+      settings,
+      setAutoResume,
       live,
       liveSeries,
       tick,

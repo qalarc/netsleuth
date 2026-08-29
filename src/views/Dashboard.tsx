@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
-  ChevronRight,
   Globe,
   MonitorSmartphone,
   Radar,
@@ -25,6 +24,7 @@ import {
 } from "../components/Chart";
 import { DeviceRow } from "../components/DeviceRow";
 import { EmptyState, Skeleton } from "../components/EmptyState";
+import { QuickStartPanel } from "../components/QuickStartPanel";
 import { SiteRow } from "../components/SiteRow";
 import { StatCard } from "../components/StatCard";
 
@@ -36,7 +36,7 @@ function pair(v: unknown): [number, number] {
 }
 
 export function Dashboard() {
-  const { liveSeries, live, tick, openDevice, setView, backendOnline } = useStore();
+  const { liveSeries, live, tick, openDevice, setView, backendOnline, status } = useStore();
   const [dash, setDash] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -204,29 +204,8 @@ export function Dashboard() {
     );
   }
 
-  // First run: never captured anything.
-  if (dash.total_devices === 0) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-4 py-16">
-        <div className="rounded-2xl border border-cyan-400/30 bg-cyan-400/10 p-6 shadow-[0_0_60px_-15px_rgba(34,211,238,0.55)]">
-          <Radar className="h-12 w-12 text-cyan-400" />
-        </div>
-        <h2 className="text-xl font-semibold text-zinc-100">Nothing investigated yet</h2>
-        <p className="max-w-md text-center text-sm leading-relaxed text-zinc-500">
-          NetSleuth has never seen a packet. Point it at your router over SSH, listen
-          on a local interface, or import a pcap file — everything stays on this
-          machine.
-        </p>
-        <button
-          type="button"
-          onClick={() => setView("capture")}
-          className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-zinc-950 transition-colors hover:bg-cyan-300"
-        >
-          Go to Capture <ChevronRight className="h-4 w-4" />
-        </button>
-      </div>
-    );
-  }
+  // First-run hero is superseded by the QuickStartPanel below — the dashboard
+  // renders normally (zeroed stats) until the first capture brings data in.
 
   const state = dash.status.state;
   const stateAccent =
@@ -238,12 +217,18 @@ export function Dashboard() {
           ? "text-amber-400"
           : "text-zinc-300";
 
+  // Live store status is fresher than the 5 s-polled dash.status.
+  const showQuickStart =
+    status?.state === "idle" || status?.state === "stopped" || status?.state === "error";
+
   return (
     <div className="space-y-4">
       <header className="flex items-baseline justify-between">
         <h1 className="text-lg font-semibold text-zinc-100">Dashboard</h1>
         <span className="text-xs text-zinc-500">last 24 hours · auto-refresh</span>
       </header>
+
+      {showQuickStart ? <QuickStartPanel /> : null}
 
       <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
         <StatCard

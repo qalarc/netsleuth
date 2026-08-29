@@ -17,6 +17,8 @@ import type {
   DeviceInfo,
   HeatCell,
   InterfaceInfo,
+  NetworkHints,
+  RecentSource,
   SiteInfo,
   SshTestResult,
   Status,
@@ -38,6 +40,8 @@ export type {
   InterfaceInfo,
   LiveDevice,
   LiveUpdate,
+  NetworkHints,
+  RecentSource,
   SiteInfo,
   SshTestResult,
   Status,
@@ -177,6 +181,16 @@ export function getAppSettings(): Promise<AppSettings | undefined> {
 /** §15 */
 export function saveSettings(settings: AppSettings): Promise<null | undefined> {
   return cmd<null>("save_settings", { settings });
+}
+
+/** §17 (v1.1 quick start) */
+export function getNetworkHints(): Promise<NetworkHints | undefined> {
+  return cmd<NetworkHints>("get_network_hints");
+}
+
+/** §18 (v1.1 quick start) — newest first, ≤6, recorded on every successful start */
+export function getRecentSources(): Promise<RecentSource[] | undefined> {
+  return cmd<RecentSource[]>("get_recent_sources");
 }
 
 /* ── Misc ──────────────────────────────────────────────────────────────── */

@@ -101,7 +101,7 @@ function ActionRow({
 }
 
 export function Capture() {
-  const { status, refreshStatus, toast } = useStore();
+  const { status, refreshStatus, toast, networkHints, refreshRecents } = useStore();
 
   const [tab, setTab] = useState<Tab>("ssh");
 
@@ -138,6 +138,13 @@ export function Capture() {
       // Storage unavailable — non-fatal.
     }
   }, [ssh]);
+
+  // v1.1 prefill: hints arrive async — fill an empty host with the gateway IP
+  // (user/interface defaults "root" / "br-lan" already apply).
+  useEffect(() => {
+    const gw = networkHints?.default_gateway_ip;
+    if (gw && !ssh.host.trim()) setSsh((s) => (s.host.trim() ? s : { ...s, host: gw }));
+  }, [networkHints, ssh.host]);
 
   // Interfaces (loaded once, when the local tab is first shown).
   useEffect(() => {
@@ -196,6 +203,8 @@ export function Capture() {
     const r = await api.startCapture(source);
     if (r !== undefined) {
       await refreshStatus();
+      // The backend records the source at start — pull the fresh recents list.
+      void refreshRecents();
       toast(okMessage, "success");
     }
   };
@@ -244,6 +253,7 @@ export function Capture() {
       gateway_mac: gatewayDraft.trim().toLowerCase() || null,
       dns_doh_note: settings?.dns_doh_note ?? true,
       retention_days: Math.max(0, Math.floor(Number(retentionDraft) || 0)),
+      auto_resume: settings?.auto_resume ?? false,
     };
     const r = await api.saveSettings(next);
     setSavingSettings(false);

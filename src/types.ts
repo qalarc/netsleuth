@@ -169,6 +169,8 @@ export interface AppSettings {
   dns_doh_note: boolean;
   /** purge rollups older than N days (0 = keep forever) */
   retention_days: number;
+  /** v1.1 — start the most-recent source once on app launch */
+  auto_resume: boolean;
 }
 
 /** Event `live-update` — emitted every 1000 ms while running */
@@ -200,4 +202,26 @@ export interface LiveUpdate {
 export interface CaptureStatusEvent {
   state: CaptureState;
   message: string | null;
+}
+
+/** §17 `get_network_hints` (v1.1 quick start) */
+export interface NetworkHints {
+  /** from `ip route show default` ("via X") */
+  default_gateway_ip: string | null;
+  /** from the same line ("dev Y") */
+  default_interface: string | null;
+  /** this machine's non-loopback IPv4s */
+  lan_ips: string[];
+  /** same as `list_interfaces` */
+  interfaces: InterfaceInfo[];
+}
+
+/** §18 `get_recent_sources` (v1.1 quick start) */
+export interface RecentSource {
+  /** restartable with `start_capture(source)` */
+  source: CaptureSource;
+  /** source.describe() at the time it ran */
+  desc: string;
+  /** unix s */
+  last_used: number;
 }
