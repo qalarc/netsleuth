@@ -1,0 +1,192 @@
+/**
+ * Typed wrappers around every Tauri command in CONTRACT.md.
+ *
+ * `cmd()` catches invoke rejections (string errors per contract), forwards the
+ * message to a registered error listener (the store turns those into toasts)
+ * and returns `undefined` so views can treat "no data" as loading/empty.
+ */
+import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
+
+import type {
+  ActivityEvent,
+  AppSettings,
+  CaptureSource,
+  DashboardSummary,
+  DeviceDetail,
+  DeviceInfo,
+  HeatCell,
+  InterfaceInfo,
+  SiteInfo,
+  SshTestResult,
+  Status,
+  TimelinePoint,
+} from "../types";
+
+export type {
+  ActivityEvent,
+  ActivityKind,
+  AppSettings,
+  CaptureSource,
+  CaptureState,
+  CaptureStatusEvent,
+  DashboardSummary,
+  DeviceDetail,
+  DeviceInfo,
+  FlowInfo,
+  HeatCell,
+  InterfaceInfo,
+  LiveDevice,
+  LiveUpdate,
+  SiteInfo,
+  SshTestResult,
+  Status,
+  TimelinePoint,
+} from "../types";
+
+type ErrorListener = (message: string) => void;
+
+let errorListener: ErrorListener | null = null;
+let lastError = { message: "", at: 0 };
+
+/** The store registers itself so failed commands surface as error toasts. */
+export function setApiErrorListener(listener: ErrorListener | null): void {
+  errorListener = listener;
+}
+
+/**
+ * Invoke a Tauri command. Returns the payload, or `undefined` when the command
+ * rejected (the error message is reported to the listener exactly once per
+ * burst, so a dead backend does not spam 5 toasts per poll).
+ */
+export async function cmd<T>(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T | undefined> {
+  try {
+    return await invoke<T>(command, args);
+  } catch (err) {
+    const message =
+      typeof err === "string"
+        ? err
+        : err instanceof Error
+          ? err.message
+          : JSON.stringify(err);
+    const now = Date.now();
+    if (message !== lastError.message || now - lastError.at > 3000) {
+      lastError = { message, at: now };
+      errorListener?.(message);
+    }
+    return undefined;
+  }
+}
+
+/* ── Commands (CONTRACT.md order) ──────────────────────────────────────── */
+
+/** §1 */
+export function getStatus(): Promise<Status | undefined> {
+  return cmd<Status>("get_status");
+}
+
+/** §2 */
+export function listInterfaces(): Promise<InterfaceInfo[] | undefined> {
+  return cmd<InterfaceInfo[]>("list_interfaces");
+}
+
+/** §3 */
+export function startCapture(source: CaptureSource): Promise<null | undefined> {
+  return cmd<null>("start_capture", { source });
+}
+
+/** §4 */
+export function stopCapture(): Promise<null | undefined> {
+  return cmd<null>("stop_capture");
+}
+
+/** §5 */
+export function testSsh(source: CaptureSource): Promise<SshTestResult | undefined> {
+  return cmd<SshTestResult>("test_ssh", { source });
+}
+
+/** §6 */
+export function getDevices(): Promise<DeviceInfo[] | undefined> {
+  return cmd<DeviceInfo[]>("get_devices");
+}
+
+/** §7 */
+export function getDeviceDetail(
+  mac: string,
+  hours: number,
+): Promise<DeviceDetail | undefined> {
+  return cmd<DeviceDetail>("get_device_detail", { mac, hours });
+}
+
+/** §8 */
+export function getSites(
+  hours: number,
+  mac: string | null,
+): Promise<SiteInfo[] | undefined> {
+  return cmd<SiteInfo[]>("get_sites", { hours, mac });
+}
+
+/** §9 */
+export function getTimeline(
+  hours: number,
+  mac: string | null,
+): Promise<TimelinePoint[] | undefined> {
+  return cmd<TimelinePoint[]>("get_timeline", { hours, mac });
+}
+
+/** §10 */
+export function getEvents(
+  mac: string | null,
+  kind: string | null,
+  limit: number,
+): Promise<ActivityEvent[] | undefined> {
+  return cmd<ActivityEvent[]>("get_events", { mac, kind, limit });
+}
+
+/** §11 */
+export function getDashboard(hours: number): Promise<DashboardSummary | undefined> {
+  return cmd<DashboardSummary>("get_dashboard", { hours });
+}
+
+/** §12 */
+export function getHeatmap(days: number): Promise<HeatCell[] | undefined> {
+  return cmd<HeatCell[]>("get_heatmap", { days });
+}
+
+/** §13 */
+export function setDeviceAlias(
+  mac: string,
+  alias: string | null,
+): Promise<null | undefined> {
+  return cmd<null>("set_device_alias", { mac, alias });
+}
+
+/** §14 */
+export function wipeHistory(keepDevices: boolean): Promise<null | undefined> {
+  return cmd<null>("wipe_history", { keepDevices });
+}
+
+/** §15 */
+export function getAppSettings(): Promise<AppSettings | undefined> {
+  return cmd<AppSettings>("get_app_settings");
+}
+
+/** §15 */
+export function saveSettings(settings: AppSettings): Promise<null | undefined> {
+  return cmd<null>("save_settings", { settings });
+}
+
+/* ── Misc ──────────────────────────────────────────────────────────────── */
+
+/** Open `https://<host>` in the system browser. Non-fatal in plain-browser dev. */
+export async function openHost(host: string): Promise<void> {
+  const clean = host.replace(/^https?:\/\//, "").split("/")[0];
+  try {
+    await openUrl(`https://${clean}`);
+  } catch {
+    // No opener plugin / running in a plain browser — intentionally silent.
+  }
+}

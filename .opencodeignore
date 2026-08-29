@@ -1,0 +1,8 @@
+# opencode/qalcode session snapshot exclusions — keep RAM sane
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+*.db
+*.db-wal
+*.db-shm

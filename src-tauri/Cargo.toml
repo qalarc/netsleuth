@@ -1,0 +1,34 @@
+[package]
+name = "netsleuth"
+version = "0.1.0"
+description = "NetSleuth — Network Traffic Investigator. Tauri app that monitors router traffic per device and site."
+authors = ["fivelidz"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+# The `_lib` suffix is necessary to make the lib name unique vs the bin name.
+name = "netsleuth_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# --- NetSleuth core ---
+rusqlite = { version = "0.40", features = ["bundled"] } # SQLite storage
+chrono = "0.4"
+
+# Packet/DNS parsing is implemented in-tree (stable wire formats, zero
+# dependency surface): classic-pcap reader, Ethernet/VLAN/IP/TCP/UDP,
+# DNS (with compression), TLS ClientHello SNI, DHCP/BOOTP options.
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

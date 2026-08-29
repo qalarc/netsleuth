@@ -1,0 +1,596 @@
+//! SQLite persistence: a dedicated writer thread owns the connection.
+//! UI commands send queries through a channel and block briefly for the
+//! reply. Flush batches arrive from the engine every ~5 s.
+
+use crate::engine::{DeviceFlush, FlowFlush, SiteFlush};
+use crate::types::{ActivityEvent, DeviceInfo, SiteInfo, TimelinePoint};
+use rusqlite::{params, Connection, OptionalExtension};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Sender};
+use std::time::Duration;
+
+pub struct WriteBatch {
+    pub devices: Vec<DeviceFlush>,
+    pub flows: Vec<FlowFlush>,
+    pub sites: Vec<SiteFlush>,
+    pub events: Vec<ActivityEvent>,
+}
+
+impl Default for WriteBatch {
+    fn default() -> Self {
+        Self {
+            devices: Vec::new(),
+            flows: Vec::new(),
+            sites: Vec::new(),
+            events: Vec::new(),
+        }
+    }
+}
+
+enum Msg {
+    Write(Box<WriteBatch>),
+    Query(Box<dyn FnOnce(&Connection) + Send + 'static>),
+    Ping(Sender<()>),
+}
+
+#[derive(Clone)]
+pub struct StoreHandle {
+    tx: Sender<Msg>,
+    pub path: PathBuf,
+}
+
+impl StoreHandle {
+    pub fn open(path: &Path) -> Result<Self, String> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let conn = Connection::open(path).map_err(|e| e.to_string())?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(|e| e.to_string())?;
+        conn.pragma_update(None, "synchronous", "NORMAL")
+            .map_err(|e| e.to_string())?;
+        init_schema(&conn)?;
+
+        let (tx, rx) = std::sync::mpsc::channel::<Msg>();
+        std::thread::Builder::new()
+            .name("netsleuth-store".into())
+            .spawn(move || {
+                while let Ok(msg) = rx.recv() {
+                    match msg {
+                        Msg::Write(batch) => {
+                            if let Err(e) = apply_write(&conn, &batch) {
+                                eprintln!("[store] write failed: {e}");
+                            }
+                        }
+                        Msg::Query(f) => f(&conn),
+                        Msg::Ping(ack) => {
+                            let _ = ack.send(());
+                        }
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+
+        Ok(Self {
+            tx,
+            path: path.to_path_buf(),
+        })
+    }
+
+    pub fn write(&self, batch: WriteBatch) {
+        let _ = self.tx.send(Msg::Write(Box::new(batch)));
+    }
+
+    /// Run a read query on the store thread and block for the result.
+    pub fn query<T, F>(&self, f: F) -> T
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> T + Send + 'static,
+    {
+        let (ack_tx, ack_rx) = channel::<T>();
+        let closure = move |conn: &Connection| {
+            let v = f(conn);
+            let _ = ack_tx.send(v);
+        };
+        let _ = self.tx.send(Msg::Query(Box::new(closure)));
+        ack_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("store thread alive")
+    }
+
+    pub fn ping(&self) -> bool {
+        let (tx, rx) = channel();
+        self.tx.send(Msg::Ping(tx)).is_ok() && rx.recv_timeout(Duration::from_secs(2)).is_ok()
+    }
+}
+
+fn init_schema(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS devices(
+            mac TEXT PRIMARY KEY,
+            alias TEXT,
+            hostname TEXT,
+            vendor TEXT,
+            ip TEXT,
+            first_seen INTEGER NOT NULL,
+            last_seen INTEGER NOT NULL,
+            total_up INTEGER NOT NULL DEFAULT 0,
+            total_down INTEGER NOT NULL DEFAULT 0,
+            is_gateway INTEGER NOT NULL DEFAULT 0,
+            device_type TEXT
+        );
+        CREATE TABLE IF NOT EXISTS device_hourly(
+            hour INTEGER NOT NULL,
+            mac TEXT NOT NULL,
+            up INTEGER NOT NULL DEFAULT 0,
+            down INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(hour, mac)
+        );
+        CREATE TABLE IF NOT EXISTS site_hourly(
+            hour INTEGER NOT NULL,
+            mac TEXT NOT NULL,
+            host TEXT NOT NULL,
+            up INTEGER NOT NULL DEFAULT 0,
+            down INTEGER NOT NULL DEFAULT 0,
+            hits INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(hour, mac, host)
+        );
+        CREATE TABLE IF NOT EXISTS events(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            mac TEXT,
+            ip TEXT,
+            site TEXT,
+            detail TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+        CREATE INDEX IF NOT EXISTS idx_events_mac ON events(mac);
+        CREATE TABLE IF NOT EXISTS flows(
+            mac TEXT NOT NULL,
+            remote_ip TEXT NOT NULL,
+            port INTEGER NOT NULL,
+            proto TEXT NOT NULL,
+            up INTEGER NOT NULL DEFAULT 0,
+            down INTEGER NOT NULL DEFAULT 0,
+            first INTEGER,
+            last INTEGER,
+            PRIMARY KEY(mac, remote_ip, port, proto)
+        );
+        CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+        "#,
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn apply_write(conn: &Connection, b: &WriteBatch) -> Result<(), rusqlite::Error> {
+    for d in &b.devices {
+        conn.execute(
+            "INSERT INTO devices(mac, first_seen, last_seen, hostname, vendor, ip, total_up, total_down)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
+             ON CONFLICT(mac) DO UPDATE SET
+                last_seen = MAX(devices.last_seen, excluded.last_seen),
+                hostname = COALESCE(excluded.hostname, devices.hostname),
+                vendor = COALESCE(devices.vendor, excluded.vendor),
+                ip = COALESCE(excluded.ip, devices.ip),
+                total_up = devices.total_up + excluded.total_up,
+                total_down = devices.total_down + excluded.total_down",
+            params![
+                crate::types::mac_str(&d.mac),
+                d.first,
+                d.last,
+                d.hostname,
+                d.vendor,
+                d.ip.map(|i| i.to_string()),
+                d.up_delta as i64,
+                d.down_delta as i64,
+            ],
+        )?;
+        let hour = (d.last / 3600) * 3600;
+        conn.execute(
+            "INSERT INTO device_hourly(hour, mac, up, down) VALUES(?1,?2,?3,?4)
+             ON CONFLICT(hour, mac) DO UPDATE SET
+                up = up + excluded.up, down = down + excluded.down",
+            params![hour, crate::types::mac_str(&d.mac), d.up_delta as i64, d.down_delta as i64],
+        )?;
+    }
+
+    for f in &b.flows {
+        let proto = if f.key.proto == 6 {
+            "tcp"
+        } else if f.key.proto == 17 {
+            "udp"
+        } else {
+            "other"
+        };
+        conn.execute(
+            "INSERT INTO flows(mac, remote_ip, port, proto, up, down, first, last)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
+             ON CONFLICT(mac, remote_ip, port, proto) DO UPDATE SET
+                up = up + excluded.up,
+                down = down + excluded.down,
+                last = excluded.last",
+            params![
+                crate::types::mac_str(&f.key.mac),
+                f.key.ip.to_string(),
+                f.key.port,
+                proto,
+                f.up as i64,
+                f.down as i64,
+                f.first,
+                f.last,
+            ],
+        )?;
+    }
+
+    for s in &b.sites {
+        conn.execute(
+            "INSERT INTO site_hourly(hour, mac, host, up, down, hits) VALUES(?1,?2,?3,?4,?5,?6)
+             ON CONFLICT(hour, mac, host) DO UPDATE SET
+                up = up + excluded.up,
+                down = down + excluded.down,
+                hits = hits + excluded.hits",
+            params![
+                s.hour,
+                crate::types::mac_str(&s.mac),
+                s.host,
+                s.up as i64,
+                s.down as i64,
+                s.hits as i64,
+            ],
+        )?;
+    }
+
+    for e in &b.events {
+        conn.execute(
+            "INSERT INTO events(ts, kind, mac, ip, site, detail) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![e.ts, e.kind, e.mac, e.ip, e.site, e.detail],
+        )?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Queries — these run on the store thread via StoreHandle::query
+// ---------------------------------------------------------------------------
+
+pub fn device_rows(conn: &Connection) -> Vec<DeviceInfo> {
+    let mut stmt = match conn.prepare(
+        "SELECT mac, alias, hostname, vendor, ip, first_seen, last_seen,
+                total_up, total_down, is_gateway, device_type
+         FROM devices",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok(DeviceInfo {
+            mac: r.get(0)?,
+            alias: r.get(1)?,
+            hostname: r.get(2)?,
+            vendor: r.get(3)?,
+            ip: r.get(4)?,
+            first_seen: r.get(5)?,
+            last_seen: r.get(6)?,
+            total_up: r.get::<_, i64>(7)? as u64,
+            total_down: r.get::<_, i64>(8)? as u64,
+            online: false,
+            is_gateway: r.get::<_, i64>(9)? != 0,
+            device_type: r.get(10)?,
+        })
+    });
+    match rows {
+        Ok(iter) => iter.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn hour_start(now: i64) -> i64 {
+    (now / 3600) * 3600
+}
+
+fn clamp_hours(hours: i64) -> i64 {
+    hours.clamp(1, 24 * 90)
+}
+
+pub fn timeline(conn: &Connection, now: i64, hours: i64, mac: Option<&str>) -> Vec<TimelinePoint> {
+    let hours = clamp_hours(hours);
+    let start = hour_start(now) - (hours - 1) * 3600;
+    let mut map = std::collections::HashMap::new();
+    let sql = match mac {
+        Some(_) => {
+            "SELECT hour, up, down FROM device_hourly WHERE hour >= ?1 AND mac = ?2"
+        }
+        None => "SELECT hour, SUM(up), SUM(down) FROM device_hourly WHERE hour >= ?1 GROUP BY hour",
+    };
+    let mut collect = |conn: &Connection| -> Result<(), rusqlite::Error> {
+        let mut stmt = conn.prepare(sql)?;
+        let mut binds: Vec<rusqlite::types::Value> = vec![start.into()];
+        if let Some(m) = mac {
+            binds.push(rusqlite::types::Value::Text(m.to_string()));
+        }
+        let rows = stmt.query_map(rusqlite::params_from_iter(binds), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+        })?;
+        for row in rows.flatten() {
+            map.insert(row.0, (row.1 as u64, row.2 as u64));
+        }
+        Ok(())
+    };
+    let _ = collect(conn);
+    let mut out = Vec::with_capacity(hours as usize);
+    let mut h = start;
+    while h <= hour_start(now) {
+        let (up, down) = map.remove(&h).unwrap_or((0, 0));
+        out.push(TimelinePoint {
+            ts: h,
+            bytes_up: up,
+            bytes_down: down,
+        });
+        h += 3600;
+    }
+    out
+}
+
+pub fn sites(
+    conn: &Connection,
+    now: i64,
+    hours: i64,
+    mac: Option<&str>,
+    limit: usize,
+) -> Vec<SiteInfo> {
+    let hours = clamp_hours(hours);
+    let start = hour_start(now) - (hours - 1) * 3600;
+    let sql = match mac {
+        Some(_) => {
+            "SELECT host, SUM(up), SUM(down), SUM(hits), MIN(hour), MAX(hour),
+                    COUNT(DISTINCT mac), GROUP_CONCAT(DISTINCT mac)
+             FROM site_hourly WHERE hour >= ?1 AND mac = ?2
+             GROUP BY host ORDER BY SUM(up)+SUM(down) DESC LIMIT ?3"
+        }
+        None => {
+            "SELECT host, SUM(up), SUM(down), SUM(hits), MIN(hour), MAX(hour),
+                    COUNT(DISTINCT mac), GROUP_CONCAT(DISTINCT mac)
+             FROM site_hourly WHERE hour >= ?1
+             GROUP BY host ORDER BY SUM(up)+SUM(down) DESC LIMIT ?3"
+        }
+    };
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = match mac {
+        Some(m) => stmt.query_map(params![start, m, limit as i64], map_site_row),
+        None => stmt.query_map(params![start, limit as i64], map_site_row),
+    };
+    match rows {
+        Ok(iter) => iter.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn map_site_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<SiteInfo> {
+    let host: String = r.get(0)?;
+    let group: Option<String> = r.get(7)?;
+    let macs: Vec<String> = group
+        .unwrap_or_default()
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .take(10)
+        .map(|s| s.to_string())
+        .collect();
+    Ok(SiteInfo {
+        domain: crate::types::registrable_domain(&host),
+        host,
+        bytes_up: r.get::<_, i64>(1)? as u64,
+        bytes_down: r.get::<_, i64>(2)? as u64,
+        hits: r.get::<_, i64>(3)? as u64,
+        first_seen: r.get(4)?,
+        last_seen: r.get(5)?,
+        device_count: r.get::<_, i64>(6)? as u64,
+        macs,
+    })
+}
+
+pub fn events(
+    conn: &Connection,
+    mac: Option<&str>,
+    kind: Option<&str>,
+    limit: usize,
+) -> Vec<ActivityEvent> {
+    let mut sql = String::from(
+        "SELECT ts, kind, mac, ip, site, detail FROM events WHERE 1=1",
+    );
+    if mac.is_some() {
+        sql.push_str(" AND mac = ?1");
+    }
+    if kind.is_some() {
+        sql.push_str(" AND kind = ?2");
+    }
+    sql.push_str(" ORDER BY id DESC LIMIT ?3");
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map(
+        params![mac, kind, limit as i64],
+        |r| {
+            Ok(ActivityEvent {
+                ts: r.get(0)?,
+                kind: r.get(1)?,
+                mac: r.get(2)?,
+                ip: r.get(3)?,
+                site: r.get(4)?,
+                detail: r.get(5)?,
+            })
+        },
+    );
+    match rows {
+        Ok(iter) => iter.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+pub fn range_device_bytes(
+    conn: &Connection,
+    now: i64,
+    hours: i64,
+) -> std::collections::HashMap<String, (u64, u64)> {
+    let hours = clamp_hours(hours);
+    let start = hour_start(now) - (hours - 1) * 3600;
+    let mut out = std::collections::HashMap::new();
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT mac, SUM(up), SUM(down) FROM device_hourly WHERE hour >= ?1 GROUP BY mac",
+    ) else {
+        return out;
+    };
+    let Ok(rows) = stmt.query_map(params![start], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)? as u64,
+            r.get::<_, i64>(2)? as u64,
+        ))
+    }) else {
+        return out;
+    };
+    for row in rows.flatten() {
+        out.insert(row.0, (row.1, row.2));
+    }
+    out
+}
+
+pub fn heatmap(conn: &Connection, now: i64, days: i64) -> Vec<crate::types::HeatCell> {
+    let days = days.clamp(1, 90);
+    let start_hour = hour_start(now) - (days - 1) * 24 * 3600;
+    let mut map = std::collections::HashMap::new();
+    if let Ok(mut stmt) = conn
+        .prepare("SELECT hour, SUM(up+down) FROM device_hourly WHERE hour >= ?1 GROUP BY hour")
+    {
+        if let Ok(rows) = stmt.query_map(params![start_hour], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as u64))
+        }) {
+            for (h, b) in rows.flatten() {
+                use chrono::TimeZone;
+                if let Some(local) = chrono::Local.timestamp_opt(h, 0).single() {
+                    let key = (
+                        local.format("%Y-%m-%d").to_string(),
+                        local.format("%H").to_string().parse::<u32>().unwrap_or(0),
+                    );
+                    *map.entry(key).or_insert(0u64) += b;
+                }
+            }
+        }
+    }
+    // Emit full grid (day × hour), oldest first
+    let mut out = Vec::with_capacity((days * 24) as usize);
+    for d in 0..days {
+        use chrono::TimeZone;
+        let ts = start_hour + d * 24 * 3600 + 12 * 3600; // midday anchor
+        if let Some(local) = chrono::Local.timestamp_opt(ts, 0).single() {
+            let day = local.format("%Y-%m-%d").to_string();
+            for hour in 0..24 {
+                out.push(crate::types::HeatCell {
+                    day: day.clone(),
+                    hour,
+                    bytes: *map.get(&(day.clone(), hour)).unwrap_or(&0),
+                });
+            }
+        }
+    }
+    out
+}
+
+pub fn db_flows(conn: &Connection, mac: &str, limit: usize) -> Vec<crate::types::FlowInfo> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT remote_ip, port, proto, up, down, first, last
+         FROM flows WHERE mac = ?1 ORDER BY last DESC LIMIT ?2",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map(params![mac, limit as i64], |r| {
+        Ok(crate::types::FlowInfo {
+            remote_ip: r.get(0)?,
+            port: r.get::<_, i64>(1)? as u16,
+            proto: r.get(2)?,
+            host: None,
+            bytes_up: r.get::<_, i64>(3)? as u64,
+            bytes_down: r.get::<_, i64>(4)? as u64,
+            first_seen: r.get(5)?,
+            last_seen: r.get(6)?,
+        })
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
+pub fn names_for_engine(conn: &Connection) -> Vec<([u8; 6], Option<String>, Option<String>)> {
+    let Ok(mut stmt) = conn.prepare("SELECT mac, alias, hostname FROM devices") else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<String>>(2)?,
+        ))
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok)
+        .filter_map(|(mac, alias, hostname)| {
+            crate::types::parse_mac(&mac).map(|m| (m, alias, hostname))
+        })
+        .collect()
+}
+
+pub fn set_alias(conn: &Connection, mac: &str, alias: Option<&str>) {
+    let _ = conn.execute(
+        "UPDATE devices SET alias = ?1 WHERE mac = ?2",
+        params![alias, mac],
+    );
+}
+
+pub fn wipe(conn: &Connection, keep_devices: bool) {
+    let _ = conn.execute_batch(
+        "DELETE FROM events; DELETE FROM device_hourly; DELETE FROM site_hourly; DELETE FROM flows;",
+    );
+    if !keep_devices {
+        let _ = conn.execute_batch("DELETE FROM devices;");
+    }
+}
+
+pub fn purge(conn: &Connection, retention_days: u32) {
+    if retention_days == 0 {
+        return;
+    }
+    let cutoff = chrono::Utc::now().timestamp() - (retention_days as i64) * 86400;
+    let hour_cutoff = (cutoff / 3600) * 3600;
+    let _ = conn.execute("DELETE FROM device_hourly WHERE hour < ?1", params![hour_cutoff]);
+    let _ = conn.execute("DELETE FROM site_hourly WHERE hour < ?1", params![hour_cutoff]);
+    let _ = conn.execute("DELETE FROM events WHERE ts < ?1", params![cutoff]);
+}
+
+pub fn get_meta(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row("SELECT v FROM meta WHERE k = ?1", params![key], |r| {
+        r.get(0)
+    })
+    .optional()
+    .ok()
+    .flatten()
+}
+
+pub fn set_meta(conn: &Connection, key: &str, value: &str) {
+    let _ = conn.execute(
+        "INSERT INTO meta(k, v) VALUES(?1, ?2)
+         ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+        params![key, value],
+    );
+}
+
+pub fn device_count(conn: &Connection) -> u64 {
+    conn.query_row("SELECT COUNT(*) FROM devices", [], |r| r.get::<_, i64>(0))
+        .map(|c| c as u64)
+        .unwrap_or(0)
+}
