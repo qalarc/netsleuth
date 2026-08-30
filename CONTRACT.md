@@ -213,3 +213,45 @@ most-recently-used (deduped by `desc`, newest first, max 6 entries).
 `AppSettings` gains `auto_resume: boolean` (default `false`). When true, the
 frontend starts the most-recent source automatically once on app launch
 (after status is confirmed `idle`). One attempt per launch, no retries.
+
+---
+
+## Additions — v1.2 (security analytics & alerting)
+
+### 19. `get_alerts(hours, includeDismissed)` → `Vec<AlertInfo>`
+### 20. `dismiss_alert(id, dismissed)` → `null`
+### 21. `get_security_summary(hours)` → `SecuritySummary`
+```ts
+interface AlertInfo {
+  id: number;
+  first_seen: number;
+  last_seen: number;
+  severity: "high" | "medium" | "low" | "info";
+  rule: string;   // beacon | dns_rate | bad_port | cheap_tld | exfil | raw_ip | inbound | blocklist
+  mac: string | null;
+  host: string | null;
+  ip: string | null;
+  detail: string;          // human-readable explanation
+  dismissed: boolean;
+  count: number;           // times re-confirmed
+}
+interface SecuritySummary { high: number; medium: number; low: number; info: number; }
+```
+Semantics: alerts dedupe on (rule, mac, host) while not dismissed (bumping
+last_seen/count, keeping the highest severity). Evaluated every ~30 s while
+capturing.
+
+### Event `alerts` — when new alerts are inserted
+```ts
+{ new: AlertInfo[] }
+```
+
+### Rules reference (severity)
+- `beacon` (medium/high) — regular-interval connections to one host (C2-style), ≥10 conns, jitter ≤35%
+- `dns_rate` (medium) — ≥40 unique domains from one device in 15 min (DGA/tunnel)
+- `bad_port` (high) — flow on 1337/4444/5555/6666/6667/7000/9001/9030/9999/31337
+- `cheap_tld` (low) — traffic to .tk/.ml/.ga/.cf/.gq/.pw/.su/.top
+- `exfil` (medium/high) — >50 MB uploaded to one host in an hour with up > 6× down
+- `raw_ip` (low) — >10 MB to unresolved raw IPs on non-standard ports
+- `inbound` (low) — download-heavy flow from a remote ephemeral port (possible unsolicited inbound / P2P)
+- `blocklist` (high) — match in `<app-data>/blocklist.txt` (domain suffixes or exact IPs, `#` comments)

@@ -33,6 +33,30 @@ pub struct NetworkHints {
     pub interfaces: Vec<InterfaceInfo>,
 }
 
+/// A security/malware heuristic finding (CONTRACT v1.2).
+#[derive(Debug, Clone, Serialize)]
+pub struct AlertInfo {
+    pub id: i64,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    pub severity: String, // "info" | "low" | "medium" | "high"
+    pub rule: String,     // beacon | dns_rate | bad_port | cheap_tld | exfil | raw_ip | inbound | blocklist
+    pub mac: Option<String>,
+    pub host: Option<String>,
+    pub ip: Option<String>,
+    pub detail: String,
+    pub dismissed: bool,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct SecuritySummary {
+    pub high: u64,
+    pub medium: u64,
+    pub low: u64,
+    pub info: u64,
+}
+
 /// A previously-used capture source offered for one-click restart.
 #[derive(Debug, Clone, Serialize)]
 pub struct RecentSource {

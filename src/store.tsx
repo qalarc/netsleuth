@@ -23,17 +23,27 @@ import {
 import { listen } from "@tauri-apps/api/event";
 
 import * as api from "./lib/api";
+import { ruleLabel, shorten, sortAlerts } from "./lib/security";
 import type {
+  AlertInfo,
+  AlertsEvent,
   AppSettings,
   CaptureSource,
   CaptureState,
   LiveUpdate,
   NetworkHints,
   RecentSource,
+  SecuritySummary,
   Status,
 } from "./types";
 
-export type View = "dashboard" | "devices" | "sites" | "history" | "capture";
+export type View =
+  | "dashboard"
+  | "devices"
+  | "sites"
+  | "security"
+  | "history"
+  | "capture";
 
 /** One point of the client-side rolling live-throughput buffer. */
 export interface LivePoint {
@@ -45,7 +55,7 @@ export interface LivePoint {
 export interface ToastItem {
   id: number;
   message: string;
-  kind: "error" | "info" | "success";
+  kind: "error" | "info" | "success" | "alert";
 }
 
 export interface AppStore {
@@ -85,6 +95,15 @@ export interface AppStore {
   liveSeries: readonly LivePoint[];
   /** increments on every live-update tick (drives cheap refetches). */
   tick: number;
+
+  /** v1.2 security — non-dismissed alerts (24 h), severity+recency sorted. */
+  alerts: AlertInfo[];
+  /** v1.2 security — counts by severity (24 h); null before the first fetch. */
+  securitySummary: SecuritySummary | null;
+  /** Re-fetch alerts + summary (used after dismiss / restore). */
+  refreshSecurity: () => Promise<void>;
+  /** Optimistically remove an alert; a failed call reverts via refetch. */
+  dismiss: (id: number) => void;
 
   toasts: ToastItem[];
   toast: (message: string, kind?: ToastItem["kind"]) => void;
@@ -133,6 +152,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [liveSeries, setLiveSeries] = useState<LivePoint[]>([]);
   const [tick, setTick] = useState(0);
 
+  const [alerts, setAlerts] = useState<AlertInfo[]>([]);
+  const [securitySummary, setSecuritySummary] = useState<SecuritySummary | null>(
+    null,
+  );
+
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastIdRef = useRef(0);
 
@@ -165,6 +189,30 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setRecentsReady(true);
     if (r) setBackendOnline(true);
   }, []);
+
+  /** v1.2 — alerts (non-dismissed, 24 h) + severity summary. */
+  const refreshSecurity = useCallback(async () => {
+    const [a, s] = await Promise.all([
+      api.getAlerts(24, false),
+      api.getSecuritySummary(24),
+    ]);
+    // Keep previous data on failure (plain-browser dev / dead backend).
+    if (a) setAlerts(sortAlerts(a.filter((x) => !x.dismissed)));
+    if (s) setSecuritySummary(s);
+  }, []);
+
+  const dismiss = useCallback(
+    (id: number) => {
+      // Optimistic removal — the table + sidebar react instantly. On failure
+      // the row comes back with the refresh below (error already toasted by
+      // the api listener); on success the summary counts catch up.
+      setAlerts((prev) => prev.filter((a) => a.id !== id));
+      void api
+        .dismissAlert(id, true)
+        .finally(() => void refreshSecurity());
+    },
+    [refreshSecurity],
+  );
 
   /** Pending post-start recents timers — cleared when the provider unmounts. */
   const quickTimersRef = useRef<number[]>([]);
@@ -251,6 +299,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         void refreshStatus();
         void refreshRecents();
       }),
+      safeListen<AlertsEvent>("alerts", (p) => {
+        if (disposed) return;
+        const fresh = p.new ?? [];
+        if (fresh.length > 0) {
+          // Merge by id (an insert event never re-sends existing rows, but a
+          // reconnecting backend might).
+          setAlerts((prev) => {
+            const byId = new Map(prev.map((a) => [a.id, a]));
+            for (const a of fresh) byId.set(a.id, a);
+            return sortAlerts([...byId.values()]);
+          });
+          for (const a of fresh) {
+            if (a.severity === "high") {
+              const where = a.host ?? a.ip ?? a.mac ?? "unknown";
+              toast(`${ruleLabel(a.rule)} · ${where} — ${shorten(a.detail)}`, "alert");
+            }
+          }
+        }
+        // Counts catch up with the (lightweight) summary refetch.
+        void refreshSecurity();
+      }),
     ];
 
     return () => {
@@ -260,7 +329,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       quickTimersRef.current = [];
       api.setApiErrorListener(null);
     };
-  }, [refreshStatus, refreshRecents, toast]);
+  }, [refreshStatus, refreshRecents, refreshSecurity, toast]);
+
+  // v1.2 — security poll (alerts + summary every 10 s).
+  useEffect(() => {
+    void refreshSecurity();
+    const iv = window.setInterval(() => void refreshSecurity(), 10000);
+    return () => window.clearInterval(iv);
+  }, [refreshSecurity]);
 
   const openDevice = useCallback((mac: string) => {
     setView("devices");
@@ -289,6 +365,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       live,
       liveSeries,
       tick,
+      alerts,
+      securitySummary,
+      refreshSecurity,
+      dismiss,
       toasts,
       toast,
       dismissToast,
@@ -311,6 +391,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       live,
       liveSeries,
       tick,
+      alerts,
+      securitySummary,
+      refreshSecurity,
+      dismiss,
       toasts,
       toast,
       dismissToast,

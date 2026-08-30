@@ -48,6 +48,7 @@ pub struct IpPkt<'a> {
     pub proto: u8, // 6 tcp, 17 udp, other
     pub sport: u16,
     pub dport: u16,
+    pub tcp_flags: u8, // TCP flags byte (0x02 SYN, 0x10 ACK); 0 for non-TCP
     pub payload: &'a [u8],
 }
 
@@ -185,13 +186,14 @@ fn parse_ipv4<'a>(data: &'a [u8], pkt: &mut Pkt<'a>) -> Option<()> {
     let src = IpAddr::V4(Ipv4Addr::new(data[12], data[13], data[14], data[15]));
     let dst = IpAddr::V4(Ipv4Addr::new(data[16], data[17], data[18], data[19]));
     let l4 = &data[ihl..end];
-    let (sport, dport, payload) = parse_l4(proto, l4);
+    let (sport, dport, tcp_flags, payload) = parse_l4(proto, l4);
     pkt.ip = Some(IpPkt {
         src,
         dst,
         proto,
         sport,
         dport,
+        tcp_flags,
         payload,
     });
     Some(())
@@ -234,33 +236,35 @@ fn parse_ipv6<'a>(data: &'a [u8], pkt: &mut Pkt<'a>) -> Option<()> {
             _ => break,
         }
     }
-    let (sport, dport, payload) = parse_l4(nh, l4);
+    let (sport, dport, tcp_flags, payload) = parse_l4(nh, l4);
     pkt.ip = Some(IpPkt {
         src: IpAddr::V6(Ipv6Addr::from(src_bytes)),
         dst: IpAddr::V6(Ipv6Addr::from(dst_bytes)),
         proto: nh,
         sport,
         dport,
+        tcp_flags,
         payload,
     });
     Some(())
 }
 
-fn parse_l4(proto: u8, l4: &[u8]) -> (u16, u16, &[u8]) {
+fn parse_l4<'a>(proto: u8, l4: &'a [u8]) -> (u16, u16, u8, &'a [u8]) {
     match proto {
-        6 if l4.len() >= 20 => {
+        6 if l4.len() >= 14 => {
             let sport = be16(&l4[0..2]);
             let dport = be16(&l4[2..4]);
+            let flags = l4[13];
             let off = ((l4[12] >> 4) as usize) * 4;
             let payload = if l4.len() > off { &l4[off.min(l4.len())..] } else { &[] };
-            (sport, dport, payload)
+            (sport, dport, flags, payload)
         }
         17 if l4.len() >= 8 => {
             let sport = be16(&l4[0..2]);
             let dport = be16(&l4[2..4]);
-            (sport, dport, &l4[8..])
+            (sport, dport, 0, &l4[8..])
         }
-        _ => (0, 0, &[]),
+        _ => (0, 0, 0, &[]),
     }
 }
 

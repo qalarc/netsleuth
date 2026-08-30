@@ -6,10 +6,12 @@ import {
   MonitorSmartphone,
   Radar,
   Radio,
+  ShieldAlert,
   TriangleAlert,
 } from "lucide-react";
 import * as api from "../lib/api";
 import { deviceName, fmtBps, fmtBytes, fmtHm } from "../lib/format";
+import { ruleLabel } from "../lib/security";
 import { useStore } from "../store";
 import type { DashboardSummary, LiveDevice } from "../types";
 import { ActivityFeed } from "../components/ActivityFeed";
@@ -24,6 +26,7 @@ import {
 } from "../components/Chart";
 import { DeviceRow } from "../components/DeviceRow";
 import { EmptyState, Skeleton } from "../components/EmptyState";
+import { SeverityBadge } from "../components/SeverityBadge";
 import { QuickStartPanel } from "../components/QuickStartPanel";
 import { SiteRow } from "../components/SiteRow";
 import { StatCard } from "../components/StatCard";
@@ -36,7 +39,8 @@ function pair(v: unknown): [number, number] {
 }
 
 export function Dashboard() {
-  const { liveSeries, live, tick, openDevice, setView, backendOnline, status } = useStore();
+  const { liveSeries, live, tick, openDevice, setView, backendOnline, status, alerts, securitySummary } =
+    useStore();
   const [dash, setDash] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -230,7 +234,7 @@ export function Dashboard() {
 
       {showQuickStart ? <QuickStartPanel /> : null}
 
-      <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 xl:grid-cols-5">
         <StatCard
           label="Downloaded (24h)"
           value={fmtBytes(dash.range_down)}
@@ -263,6 +267,37 @@ export function Dashboard() {
           icon={<Radio className="h-4 w-4" />}
           sub={dash.status.source_desc || "—"}
         />
+        {/* v1.2 — security summary; rose border while any high-severity alert is live. */}
+        <button
+          type="button"
+          onClick={() => setView("security")}
+          title="Open Security & anomalies"
+          className="text-left focus:outline-none"
+        >
+          <StatCard
+            label="Security (24h)"
+            tone={(securitySummary?.high ?? 0) > 0 ? "danger" : "default"}
+            icon={
+              <ShieldAlert
+                className={`h-4 w-4 ${(securitySummary?.high ?? 0) > 0 ? "text-rose-400" : ""}`}
+              />
+            }
+            value={
+              securitySummary ? (
+                <span className="flex items-baseline gap-1.5">
+                  <span className="text-rose-400">{securitySummary.high}</span>
+                  <span className="text-zinc-600">/</span>
+                  <span className="text-amber-400">{securitySummary.medium}</span>
+                  <span className="text-zinc-600">/</span>
+                  <span className="text-sky-400">{securitySummary.low}</span>
+                </span>
+              ) : (
+                "—"
+              )
+            }
+            sub={securitySummary ? "high / medium / low alerts" : "summary unavailable"}
+          />
+        </button>
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
@@ -376,6 +411,41 @@ export function Dashboard() {
               <ActivityFeed events={dash.events} resolveMac={resolveMac} />
             </div>
           </section>
+
+          {/* v1.2 — top alerts mini-list (only when something is live). */}
+          {alerts.length > 0 ? (
+            <section className="rounded-xl border border-rose-400/15 bg-zinc-900/60 transition-colors hover:border-rose-400/30">
+              <div className="flex items-center justify-between border-b border-zinc-800/60 px-4 py-2.5">
+                <span className="label">Top alerts</span>
+                <button
+                  type="button"
+                  onClick={() => setView("security")}
+                  className="text-xs text-zinc-500 transition-colors hover:text-rose-300"
+                >
+                  All alerts →
+                </button>
+              </div>
+              <div className="divide-y divide-zinc-800/50">
+                {alerts.slice(0, 3).map((a) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    onClick={() => setView("security")}
+                    title={a.detail}
+                    className="flex w-full items-center gap-2 px-4 py-1.5 text-left transition-colors hover:bg-zinc-800/30"
+                  >
+                    <SeverityBadge severity={a.severity} />
+                    <span className="shrink-0 text-xs text-zinc-300">
+                      {ruleLabel(a.rule)}
+                    </span>
+                    <span className="num min-w-0 flex-1 truncate text-right text-xs text-zinc-500">
+                      {a.host ?? a.ip ?? a.mac ?? ""}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
         </div>
       </div>
     </div>

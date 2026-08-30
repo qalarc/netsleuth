@@ -10,6 +10,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 
 import type {
   ActivityEvent,
+  AlertInfo,
   AppSettings,
   CaptureSource,
   DashboardSummary,
@@ -19,6 +20,7 @@ import type {
   InterfaceInfo,
   NetworkHints,
   RecentSource,
+  SecuritySummary,
   SiteInfo,
   SshTestResult,
   Status,
@@ -28,6 +30,9 @@ import type {
 export type {
   ActivityEvent,
   ActivityKind,
+  AlertInfo,
+  AlertSeverity,
+  AlertsEvent,
   AppSettings,
   CaptureSource,
   CaptureState,
@@ -42,6 +47,7 @@ export type {
   LiveUpdate,
   NetworkHints,
   RecentSource,
+  SecuritySummary,
   SiteInfo,
   SshTestResult,
   Status,
@@ -191,6 +197,29 @@ export function getNetworkHints(): Promise<NetworkHints | undefined> {
 /** §18 (v1.1 quick start) — newest first, ≤6, recorded on every successful start */
 export function getRecentSources(): Promise<RecentSource[] | undefined> {
   return cmd<RecentSource[]>("get_recent_sources");
+}
+
+/** §19 (v1.2 security) — alerts in range; `includeDismissed` adds dismissed rows. */
+export function getAlerts(
+  hours: number,
+  includeDismissed: boolean,
+): Promise<AlertInfo[] | undefined> {
+  return cmd<AlertInfo[]>("get_alerts", { hours, includeDismissed });
+}
+
+/** §20 (v1.2 security) — dismiss (true) or restore (false) one alert. */
+export function dismissAlert(
+  id: number,
+  dismissed: boolean,
+): Promise<null | undefined> {
+  return cmd<null>("dismiss_alert", { id, dismissed });
+}
+
+/** §21 (v1.2 security) — counts by severity over the window. */
+export function getSecuritySummary(
+  hours: number,
+): Promise<SecuritySummary | undefined> {
+  return cmd<SecuritySummary>("get_security_summary", { hours });
 }
 
 /* ── Misc ──────────────────────────────────────────────────────────────── */

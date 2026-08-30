@@ -35,6 +35,9 @@ pub struct FlowAcc {
     pub flush_up: u64,
     pub flush_down: u64,
     pub persisted: bool,
+    /// Connection-start timestamps (SYN, first packet, or >60 s idle gap)
+    /// — input for beaconing detection. Capped, newest last.
+    pub conn_times: std::collections::VecDeque<i64>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -129,12 +132,18 @@ pub struct Engine {
     pub packets_seen: u64,
     pub manual_gw: Option<[u8; 6]>,
     pub gw_mac: Option<[u8; 6]>,
+    /// Default-gateway IP hint: an ARP reply from this IP confirms the
+    /// gateway MAC instantly (no voting coin-flip on single-pair captures).
+    pub gw_ip: Option<std::net::Ipv4Addr>,
+    gw_confirmed: bool,
     gw_votes: HashMap<[u8; 6], u64>,
     next_gw_check: u64,
     pub devices: HashMap<[u8; 6], DeviceLive>,
     pub ip_mac: HashMap<IpAddr, ([u8; 6], i64)>,
     pub ip_names: HashMap<IpAddr, (String, i64)>,
     pub flows: HashMap<FlowKey, FlowAcc>,
+    /// Per-device recent DNS qnames (for DGA/tunneling heuristics).
+    pub dns_hist: HashMap<[u8; 6], std::collections::VecDeque<(i64, String)>>,
     pending_sites: HashMap<SiteKey, SiteAcc>,
     pub events: VecDeque<ActivityEvent>,
     dns_dedup: HashMap<([u8; 6], String), i64>,
@@ -186,18 +195,21 @@ pub struct SiteFlush {
 }
 
 impl Engine {
-    pub fn new(now: i64, manual_gw: Option<[u8; 6]>) -> Self {
+    pub fn new(now: i64, manual_gw: Option<[u8; 6]>, gw_ip: Option<std::net::Ipv4Addr>) -> Self {
         Self {
             started_at: now,
             packets_seen: 0,
             manual_gw,
             gw_mac: manual_gw,
+            gw_ip,
+            gw_confirmed: manual_gw.is_some(),
             gw_votes: HashMap::new(),
             next_gw_check: 500,
             devices: HashMap::new(),
             ip_mac: HashMap::new(),
             ip_names: HashMap::new(),
             flows: HashMap::new(),
+            dns_hist: HashMap::new(),
             pending_sites: HashMap::new(),
             events: VecDeque::new(),
             dns_dedup: HashMap::new(),
@@ -271,15 +283,25 @@ impl Engine {
     }
 
     fn maybe_elect_gw(&mut self) {
-        if self.manual_gw.is_some() || self.packets_seen < self.next_gw_check {
+        if self.gw_confirmed || self.packets_seen < self.next_gw_check {
             return;
         }
         self.next_gw_check = self.packets_seen * 4;
-        if let Some((mac, _)) = self.gw_votes.iter().max_by_key(|(_, v)| **v) {
-            let mac = *mac;
-            if self.gw_mac != Some(mac) {
-                self.gw_mac = Some(mac);
+        // Top two by votes; elect only with a clear margin (>=25%) so a
+        // single active pair (local capture) can't tie-flip the gateway.
+        let mut top: Vec<([u8; 6], u64)> = Vec::new();
+        for (mac, v) in &self.gw_votes {
+            top.push((*mac, *v));
+        }
+        top.sort_by(|a, b| b.1.cmp(&a.1));
+        if top.len() >= 2 {
+            let (win_mac, win_v) = top[0];
+            let (_, second_v) = top[1];
+            if second_v == 0 || win_v > second_v + second_v / 4 {
+                self.gw_mac = Some(win_mac);
             }
+        } else if let Some((mac, _)) = top.first() {
+            self.gw_mac = Some(*mac);
         }
     }
 
@@ -347,6 +369,19 @@ impl Engine {
         // broadcast on the LAN, so even a local-only capture sees every
         // neighbor and can list devices it cannot attribute traffic for.
         if let Some(arp) = &pkt.arp {
+            // ARP reply/announcement from the default-gateway IP confirms
+            // the gateway MAC — deterministic, immune to vote ties.
+            if !self.gw_confirmed {
+                if let Some(gip) = self.gw_ip {
+                    if arp.sender_ip == gip
+                        && !parser::is_bcast_or_mcast(&arp.sender_mac)
+                        && arp.sender_mac != [0; 6]
+                    {
+                        self.gw_mac = Some(arp.sender_mac);
+                        self.gw_confirmed = true;
+                    }
+                }
+            }
             let sip = IpAddr::V4(arp.sender_ip);
             if !parser::is_bcast_or_mcast(&arp.sender_mac) {
                 self.learn_ip_mac(sip, &arp.sender_mac, ts);
@@ -398,6 +433,7 @@ impl Engine {
                 proto: ip.proto,
                 port: if is_up { ip.dport } else { ip.sport },
             };
+            let is_syn = ip.proto == 6 && (ip.tcp_flags & 0x12) == 0x02; // SYN, no ACK
             let acc = self.flows.entry(key).or_insert_with(|| {
                 let now = ts;
                 FlowAcc {
@@ -406,6 +442,15 @@ impl Engine {
                     ..Default::default()
                 }
             });
+            if acc.conn_times.is_empty()
+                || is_syn
+                || ts - acc.last > 60
+            {
+                acc.conn_times.push_back(ts);
+                if acc.conn_times.len() > 64 {
+                    acc.conn_times.pop_front();
+                }
+            }
             acc.last = ts;
             if is_up {
                 acc.up += bytes;
@@ -534,6 +579,25 @@ impl Engine {
         let Some(qname) = dns::primary_qname(&msg) else {
             return;
         };
+
+        // security heuristics input: recent unique-domain lookups per device
+        {
+            let hist = self
+                .dns_hist
+                .entry(client_mac)
+                .or_insert_with(std::collections::VecDeque::new);
+            hist.push_back((ts, qname.clone()));
+            while let Some((old_ts, _)) = hist.front() {
+                if ts - old_ts > 900 {
+                    hist.pop_front();
+                } else {
+                    break;
+                }
+            }
+            if hist.len() > 512 {
+                hist.pop_front();
+            }
+        }
 
         if is_mdns {
             // hostname hints only: "something.local" A/AAAA queries
@@ -982,7 +1046,7 @@ mod tests {
             PcapReader::new(Cursor::new(pcap)).expect("pcap parse");
         assert_eq!(linktype, 1);
 
-        let mut engine = Engine::new(1_700_000_000, None);
+        let mut engine = Engine::new(1_700_000_000, None, None);
         loop {
             match reader.next_packet() {
                 Ok(pkt) => engine.process(pkt.ts_us, linktype, pkt.orig_len, &pkt.data),
@@ -1040,7 +1104,7 @@ mod tests {
         frame.extend_from_slice(&[0x08, 0x06]); // ARP
         frame.extend_from_slice(&arp);
 
-        let mut engine = Engine::new(1_700_000_000, None);
+        let mut engine = Engine::new(1_700_000_000, None, None);
         engine.process(1_700_000_000, 1, frame.len() as u32, &frame);
 
         let neigh = [0x74, 0xA7, 0xEA, 0x77, 0x19, 0x3F];

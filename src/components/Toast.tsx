@@ -1,8 +1,10 @@
-import { Check, Info, TriangleAlert, X } from "lucide-react";
+import { Check, Info, ShieldAlert, TriangleAlert, X } from "lucide-react";
 import { useStore } from "../store";
 
 const KIND_ICON = {
   error: <TriangleAlert className="h-4 w-4 shrink-0 text-rose-400" />,
+  /** v1.2 — rose toast for high-severity security alerts. */
+  alert: <ShieldAlert className="h-4 w-4 shrink-0 text-rose-400" />,
   info: <Info className="h-4 w-4 shrink-0 text-cyan-400" />,
   success: <Check className="h-4 w-4 shrink-0 text-emerald-400" />,
 } as const;
@@ -17,7 +19,7 @@ export function Toasts() {
         <div
           key={t.id}
           className={`animate-toastin pointer-events-auto flex items-start gap-2.5 rounded-xl border px-3 py-2.5 shadow-xl backdrop-blur ${
-            t.kind === "error"
+            t.kind === "error" || t.kind === "alert"
               ? "border-rose-400/25 bg-rose-950/80"
               : t.kind === "success"
                 ? "border-emerald-400/25 bg-emerald-950/70"

@@ -225,3 +225,38 @@ export interface RecentSource {
   /** unix s */
   last_used: number;
 }
+
+/* ── v1.2 (security analytics & alerting) ─────────────────────────────── */
+
+export type AlertSeverity = "high" | "medium" | "low" | "info";
+
+/** §19 `get_alerts` — one anomaly alert (deduped server-side on rule+mac+host). */
+export interface AlertInfo {
+  id: number;
+  first_seen: number;
+  last_seen: number;
+  severity: AlertSeverity;
+  /** beacon | dns_rate | bad_port | cheap_tld | exfil | raw_ip | inbound | blocklist */
+  rule: string;
+  mac: string | null;
+  host: string | null;
+  ip: string | null;
+  /** human-readable explanation */
+  detail: string;
+  dismissed: boolean;
+  /** times re-confirmed */
+  count: number;
+}
+
+/** §21 `get_security_summary` — alert counts by severity in range. */
+export interface SecuritySummary {
+  high: number;
+  medium: number;
+  low: number;
+  info: number;
+}
+
+/** Event `alerts` (v1.2) — emitted when new alerts are inserted. */
+export interface AlertsEvent {
+  new: AlertInfo[];
+}

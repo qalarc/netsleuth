@@ -1,6 +1,6 @@
 [package]
 name = "netsleuth"
-version = "0.1.1"
+version = "0.2.0"
 description = "NetSleuth — Network Traffic Investigator. Tauri app that monitors router traffic per device and site."
 authors = ["fivelidz"]
 license = "MIT"

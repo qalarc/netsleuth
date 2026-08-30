@@ -26,6 +26,27 @@ pub struct Session {
     pub started_at: i64,
 }
 
+/// Best default-gateway IP for a capture source: for local mode read the
+/// system default route; for SSH mode the router IS the gateway.
+fn gateway_ip_hint(source: &CaptureSource) -> Option<std::net::Ipv4Addr> {
+    match source {
+        CaptureSource::Ssh { host, .. } => host.parse().ok(),
+        CaptureSource::Local { .. } => {
+            let out = std::process::Command::new("ip")
+                .args(["route", "show", "default"])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            parse_default_route(&String::from_utf8_lossy(&out.stdout))
+                .0
+                .and_then(|g| g.parse().ok())
+        }
+        CaptureSource::File { .. } => None,
+    }
+}
+
 fn now() -> i64 {
     chrono::Local::now().timestamp()
 }
@@ -170,7 +191,7 @@ pub fn start_capture(
     let cap_state = state.cap.clone();
 
     // Fresh engine for this session.
-    *engine.lock().unwrap() = Engine::new(now(), manual_gw);
+    *engine.lock().unwrap() = Engine::new(now(), manual_gw, gateway_ip_hint(&source));
 
     let handle = CaptureHandle {
         child: Arc::new(Mutex::new(None)),
@@ -264,6 +285,40 @@ pub fn start_capture(
                 if n % 5 == 0 {
                     let flush = engine_tick.lock().unwrap().flush(t);
                     store_tick.write(flush.into());
+                }
+                // security heuristics every 30 s (contract v1.2 "alerts" event)
+                if n % 30 == 0 {
+                    let bl_path = store_tick
+                        .path
+                        .parent()
+                        .map(|p| p.join("blocklist.txt"))
+                        .unwrap_or_default();
+                    let blocklist = crate::security::load_blocklist(&bl_path);
+                    let drafts = {
+                        let e = engine_tick.lock().unwrap();
+                        crate::security::evaluate(&e, t, &blocklist)
+                    };
+                    let mut new_alerts: Vec<AlertInfo> = Vec::new();
+                    for d in drafts {
+                        let sev = d.severity;
+                        let rule = d.rule;
+                        let mac = d.mac.clone();
+                        let host = d.host.clone();
+                        let ip = d.ip.clone();
+                        let detail = d.detail.clone();
+                        let inserted = store_tick.query(move |c| {
+                            store::upsert_alert(c, t, sev, rule, mac.as_deref(), host.as_deref(), ip.as_deref(), &detail)
+                        });
+                        if let Some(id) = inserted {
+                            new_alerts.push(crate::security::to_info(
+                                id, t, t, sev, rule, d.mac.as_deref(), d.host.as_deref(),
+                                d.ip.as_deref(), &d.detail, false, 1,
+                            ));
+                        }
+                    }
+                    if !new_alerts.is_empty() {
+                        let _ = app_tick.emit("alerts", serde_json::json!({ "new": new_alerts }));
+                    }
                 }
             }
         })
@@ -477,6 +532,28 @@ pub fn get_dashboard(state: State<'_, AppState>, hours: i64) -> DashboardSummary
 pub fn get_heatmap(state: State<'_, AppState>, days: i64) -> Vec<HeatCell> {
     let nowt = now();
     state.store.query(move |c| store::heatmap(c, nowt, days))
+}
+
+#[tauri::command]
+pub fn get_alerts(state: State<'_, AppState>, hours: i64, include_dismissed: bool) -> Vec<AlertInfo> {
+    let nowt = now();
+    state
+        .store
+        .query(move |c| store::get_alert_rows(c, nowt, hours, include_dismissed))
+}
+
+#[tauri::command]
+pub fn dismiss_alert(state: State<'_, AppState>, id: i64, dismissed: bool) -> Result<(), String> {
+    state.store.query(move |c| store::set_alert_dismissed(c, id, dismissed));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_security_summary(state: State<'_, AppState>, hours: i64) -> crate::types::SecuritySummary {
+    let nowt = now();
+    state
+        .store
+        .query(move |c| store::security_summary(c, nowt, hours))
 }
 
 #[tauri::command]

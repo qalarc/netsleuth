@@ -108,6 +108,18 @@ netsleuth/
 └── CONTRACT.md           # frozen backend ⇄ frontend API contract
 ```
 
+## Security heuristics (v0.2.0)
+
+Mild malware detection, evaluated every 30 s while capturing: C2-style
+**beaconing** (regular-interval connections), **DGA/DNS-tunneling** rate
+patterns, **malware ports** (4444/31337/6667/…), **throwaway TLDs**,
+**exfiltration shape** (>50 MB/hour upload ≫ download to one host),
+**raw-IP** traffic without DNS/SNI, possible **unsolicited inbound**
+connections, and a user **blocklist** (`blocklist.txt` next to the DB: one
+domain suffix or IP per line). Findings dedupe and surface in the Security
+view, dashboard card, sidebar strip, and per-device detail. Heuristics, not
+ground truth — each alert explains its reasoning.
+
 ## Troubleshooting
 
 **"I started monitoring but see no traffic or devices"** — in order of likelihood:

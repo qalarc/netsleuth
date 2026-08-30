@@ -9,6 +9,9 @@ import {
   Play,
   Radar,
   Radio,
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
   Square,
   TriangleAlert,
 } from "lucide-react";
@@ -21,6 +24,7 @@ import { Dashboard } from "./views/Dashboard";
 import { Devices } from "./views/Devices";
 import { DeviceDetail } from "./views/DeviceDetail";
 import { Sites } from "./views/Sites";
+import { Security } from "./views/Security";
 import { History } from "./views/History";
 import { Capture } from "./views/Capture";
 
@@ -28,6 +32,7 @@ const NAV: Array<{ id: View; label: string; icon: ComponentType<{ className?: st
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "devices", label: "Devices", icon: MonitorSmartphone },
   { id: "sites", label: "Sites", icon: Globe },
+  { id: "security", label: "Security", icon: Shield },
   { id: "history", label: "History", icon: ChartColumn },
   { id: "capture", label: "Capture", icon: Radio },
 ];
@@ -176,6 +181,58 @@ function StartStopButton() {
   );
 }
 
+/**
+ * Compact security strip (v1.2): shield + nonzero severity counts — a
+ * one-glance indicator + shortcut into the Security view.
+ */
+function SecurityStrip() {
+  const { securitySummary, setView } = useStore();
+  const high = securitySummary?.high ?? 0;
+  const medium = securitySummary?.medium ?? 0;
+  const low = securitySummary?.low ?? 0;
+  const known = securitySummary !== null;
+  const counts: Array<[number, string, string]> = [
+    [high, "rose", "border-rose-400/25 bg-rose-400/10 text-rose-400"],
+    [medium, "amber", "border-amber-500/25 bg-amber-500/10 text-amber-400"],
+    [low, "sky", "border-sky-400/25 bg-sky-400/10 text-sky-400"],
+  ];
+  return (
+    <button
+      type="button"
+      onClick={() => setView("security")}
+      title="Security & anomalies — last 24 h"
+      className={`flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-xs transition-colors ${
+        high > 0
+          ? "border-rose-400/30 bg-rose-400/5 hover:border-rose-400/50"
+          : "border-zinc-800 bg-zinc-900/40 hover:border-zinc-700"
+      }`}
+    >
+      {high > 0 ? (
+        <ShieldAlert className="h-4 w-4 shrink-0 text-rose-400" />
+      ) : (
+        <ShieldCheck
+          className={`h-4 w-4 shrink-0 ${known ? "text-emerald-400/80" : "text-zinc-500"}`}
+        />
+      )}
+      <span className={`font-medium ${high > 0 ? "text-rose-300" : "text-zinc-400"}`}>
+        Security
+      </span>
+      <span className="ml-auto flex items-center gap-1">
+        {counts
+          .filter(([n]) => n > 0)
+          .map(([n, key, cls]) => (
+            <span
+              key={key}
+              className={`num rounded border px-1 py-px text-[10px] font-semibold ${cls}`}
+            >
+              {n}
+            </span>
+          ))}
+      </span>
+    </button>
+  );
+}
+
 function Sidebar() {
   const { view, setView, status } = useStore();
   return (
@@ -216,9 +273,10 @@ function Sidebar() {
         })}
       </nav>
 
-      {/* Status + footer */}
+      {/* Status + security + footer */}
       <div className="space-y-3 border-t border-zinc-800/80 px-4 py-4">
         <StatusPill />
+        <SecurityStrip />
         <StartStopButton />
         <div className="flex items-start gap-1.5 text-[10px] leading-relaxed text-zinc-600">
           <Database className="mt-px h-3 w-3 shrink-0" />
@@ -241,7 +299,7 @@ function DeviceDetailOverlay({ mac }: { mac: string }) {
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/60" onClick={closeDevice} aria-hidden />
-      <div className="animate-slidein fixed inset-y-0 right-0 z-50 flex w-[min(600px,calc(100vw-2rem))] flex-col border-l border-zinc-800 bg-zinc-950 shadow-2xl">
+      <div className="animate-slidein fixed inset-y-0 right-0 z-50 flex w-[min(880px,calc(100vw-2rem))] flex-col border-l border-zinc-800 bg-zinc-950 shadow-2xl">
         <div className="min-h-0 flex-1 overflow-y-auto">
           <DeviceDetail mac={mac} />
         </div>
@@ -267,6 +325,7 @@ function Shell() {
           {view === "dashboard" ? <Dashboard /> : null}
           {view === "devices" ? <Devices /> : null}
           {view === "sites" ? <Sites /> : null}
+          {view === "security" ? <Security /> : null}
           {view === "history" ? <History /> : null}
           {view === "capture" ? <Capture /> : null}
         </div>

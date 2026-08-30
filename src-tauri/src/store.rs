@@ -159,9 +159,155 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             PRIMARY KEY(mac, remote_ip, port, proto)
         );
         CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+        CREATE TABLE IF NOT EXISTS alerts(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            first_seen INTEGER NOT NULL,
+            last_seen INTEGER NOT NULL,
+            severity TEXT NOT NULL,
+            rule TEXT NOT NULL,
+            mac TEXT,
+            host TEXT,
+            ip TEXT,
+            detail TEXT NOT NULL,
+            dismissed INTEGER NOT NULL DEFAULT 0,
+            count INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_alerts_last ON alerts(last_seen);
         "#,
     )
     .map_err(|e| e.to_string())
+}
+
+fn severity_rank(s: &str) -> i32 {
+    match s {
+        "high" => 3,
+        "medium" => 2,
+        "low" => 1,
+        _ => 0,
+    }
+}
+
+/// Upsert a rule finding. Same rule+mac+host (not dismissed) bumps
+/// last_seen/count/severity instead of inserting. Returns Some(id) only for
+/// a NEW alert (used for the alerts event).
+pub fn upsert_alert(
+    conn: &Connection,
+    now: i64,
+    severity: &str,
+    rule: &str,
+    mac: Option<&str>,
+    host: Option<&str>,
+    ip: Option<&str>,
+    detail: &str,
+) -> Option<i64> {
+    let existing: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM alerts
+             WHERE rule = ?1 AND mac IS ?2 AND host IS ?3 AND dismissed = 0
+             ORDER BY id DESC LIMIT 1",
+            params![rule, mac, host],
+            |r| r.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    match existing {
+        Some(id) => {
+            // keep the highest severity seen (ranked in Rust — clearer than SQL CASE)
+            let cur: Option<String> = conn
+                .query_row("SELECT severity FROM alerts WHERE id = ?1", params![id], |r| {
+                    r.get(0)
+                })
+                .ok();
+            let keep = cur
+                .as_deref()
+                .map(|c| severity_rank(c) >= severity_rank(severity))
+                .unwrap_or(false);
+            let final_sev = if keep { cur.unwrap() } else { severity.to_string() };
+            let _ = conn.execute(
+                "UPDATE alerts SET last_seen = ?1, count = count + 1, severity = ?2, detail = ?3 WHERE id = ?4",
+                params![now, final_sev, detail, id],
+            );
+            None
+        }
+        None => {
+            let _ = conn.execute(
+                "INSERT INTO alerts(first_seen, last_seen, severity, rule, mac, host, ip, detail)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![now, now, severity, rule, mac, host, ip, detail],
+            );
+            Some(conn.last_insert_rowid())
+        }
+    }
+}
+
+pub fn get_alert_rows(
+    conn: &Connection,
+    now: i64,
+    hours: i64,
+    include_dismissed: bool,
+) -> Vec<crate::types::AlertInfo> {
+    let since = now - hours.clamp(1, 24 * 90) * 3600;
+    let sql = if include_dismissed {
+        "SELECT id, first_seen, last_seen, severity, rule, mac, host, ip, detail, dismissed, count
+         FROM alerts WHERE last_seen >= ?1 ORDER BY last_seen DESC, id DESC LIMIT 500"
+    } else {
+        "SELECT id, first_seen, last_seen, severity, rule, mac, host, ip, detail, dismissed, count
+         FROM alerts WHERE last_seen >= ?1 AND dismissed = 0
+         ORDER BY last_seen DESC, id DESC LIMIT 500"
+    };
+    let Ok(mut stmt) = conn.prepare(sql) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map(params![since], |r| {
+        Ok(crate::types::AlertInfo {
+            id: r.get(0)?,
+            first_seen: r.get(1)?,
+            last_seen: r.get(2)?,
+            severity: r.get(3)?,
+            rule: r.get(4)?,
+            mac: r.get(5)?,
+            host: r.get(6)?,
+            ip: r.get(7)?,
+            detail: r.get(8)?,
+            dismissed: r.get::<_, i64>(9)? != 0,
+            count: r.get::<_, i64>(10)? as u64,
+        })
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
+pub fn set_alert_dismissed(conn: &Connection, id: i64, dismissed: bool) {
+    let _ = conn.execute(
+        "UPDATE alerts SET dismissed = ?1 WHERE id = ?2",
+        params![dismissed as i64, id],
+    );
+}
+
+pub fn security_summary(conn: &Connection, now: i64, hours: i64) -> crate::types::SecuritySummary {
+    let since = now - hours.clamp(1, 24 * 90) * 3600;
+    let mut out = crate::types::SecuritySummary::default();
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT severity, COUNT(*) FROM alerts
+         WHERE last_seen >= ?1 AND dismissed = 0 GROUP BY severity",
+    ) else {
+        return out;
+    };
+    if let Ok(rows) = stmt.query_map(params![since], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+    }) {
+        for (sev, n) in rows.flatten() {
+            match sev.as_str() {
+                "high" => out.high = n,
+                "medium" => out.medium = n,
+                "low" => out.low = n,
+                _ => out.info = n,
+            }
+        }
+    }
+    out
 }
 
 fn apply_write(conn: &Connection, b: &WriteBatch) -> Result<(), rusqlite::Error> {

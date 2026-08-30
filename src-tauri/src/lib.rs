@@ -10,6 +10,7 @@ mod commands;
 mod engine;
 mod oui;
 mod parser;
+mod security;
 mod store;
 mod types;
 
@@ -50,7 +51,7 @@ pub fn run() {
             oui::load_extras(&dir);
 
             let state = AppState {
-                engine: Arc::new(Mutex::new(engine::Engine::new(0, None))),
+                engine: Arc::new(Mutex::new(engine::Engine::new(0, None, None))),
                 store,
                 cap: Arc::new(Mutex::new(CapState {
                     state: "idle",
@@ -71,6 +72,9 @@ pub fn run() {
             commands::list_interfaces,
             commands::get_network_hints,
             commands::get_recent_sources,
+            commands::get_alerts,
+            commands::dismiss_alert,
+            commands::get_security_summary,
             commands::test_ssh,
             commands::start_capture,
             commands::stop_capture,
