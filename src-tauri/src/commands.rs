@@ -582,32 +582,80 @@ pub fn get_wifi_aps(state: State<'_, AppState>, limit: Option<u32>) -> Vec<crate
     state.store.query(move |c| store::get_aps(c, limit))
 }
 
-/// Geolocate unlocated APs via Wigle (needs settings.wigle_api_name/token).
-/// Returns (geolocated_count, error_message).
+/// Locate the scan area + optionally per-AP coordinates. ZERO-ACCOUNT by
+/// default: BeaconDB gives an area fix for the observed BSSID set; Wigle
+/// (optional keys) adds precise per-AP geolocation. Returns
+/// (per_ap_count, note).
 #[tauri::command]
 pub fn wigle_geolocate(state: State<'_, AppState>, limit: Option<u32>) -> Result<(u32, Option<String>), String> {
+    let limit = limit.unwrap_or(25).clamp(1, 100) as usize;
+    let all = state.store.query(move |c| store::get_aps(c, 1000));
+    let bssids: Vec<String> = all.iter().map(|a| a.bssid.clone()).take(100).collect();
+
+    // 1. Always: account-free area fix via BeaconDB.
+    let beacon = crate::osint::BeaconDbClient::new();
+    let mut note_parts: Vec<String> = Vec::new();
+    match beacon.geolocate(&bssids) {
+        Ok(fix) => {
+            let sf = crate::types::ScanFix {
+                ts: now(),
+                lat: fix.lat,
+                lon: fix.lon,
+                accuracy_m: fix.accuracy_m,
+                fallback_ip: fix.fallback_ip,
+                source: "beacondb".into(),
+            };
+            let sf2 = sf.clone();
+            state.store.query(move |c| store::insert_scan_fix(c, &sf2));
+            note_parts.push(if fix.fallback_ip {
+                format!(
+                    "scan area located via BeaconDB (IP-level, ±{:.0} km — these APs aren't in the open DB yet)",
+                    fix.accuracy_m / 1000.0
+                )
+            } else {
+                format!(
+                    "scan area located via BeaconDB (±{:.0} m, no account needed)",
+                    fix.accuracy_m
+                )
+            });
+        }
+        Err(e) => note_parts.push(format!("BeaconDB area fix failed: {e}")),
+    }
+
+    // 2. Optional: precise per-AP geolocation when Wigle creds exist.
     let (name, token) = {
-        let s = state.settings.lock().unwrap();
-        match (&s.wigle_api_name, &s.wigle_api_token) {
+        let st = state.settings.lock().unwrap();
+        match (&st.wigle_api_name, &st.wigle_api_token) {
             (Some(n), Some(t)) if !n.is_empty() && !t.is_empty() => (n.clone(), t.clone()),
-            _ => return Err("no Wigle API credentials — add them in Capture → OSINT keys".into()),
+            _ => (String::new(), String::new()),
         }
     };
-    let limit = limit.unwrap_or(25).clamp(1, 100) as usize;
-    let bssids = state.store.query(move |c| store::unlocated_bssids(c, limit));
-    if bssids.is_empty() {
-        return Ok((0, Some("all known APs already geolocated".into())));
+    if name.is_empty() {
+        note_parts.push("per-AP precision: add optional Wigle keys in Capture → OSINT".into());
+        return Ok((0, Some(note_parts.join("; "))));
+    }
+    let unlocated = state.store.query(move |c| store::unlocated_bssids(c, limit));
+    if unlocated.is_empty() {
+        return Ok((0, Some(note_parts.join("; "))));
     }
     let client = crate::osint::WigleClient::new(&name, &token);
-    let (locs, err) = client.lookup_bssids(&bssids);
-    let n = locs.len() as u32;
+    let (locs, err) = client.lookup_bssids(&unlocated);
     for loc in &locs {
         if let (Some(lat), Some(lon)) = (loc.lat, loc.lon) {
             let b = loc.bssid.clone();
             state.store.query(move |c| store::set_ap_location(c, &b, lat, lon));
         }
     }
-    Ok((n, err))
+    if let Some(e) = err {
+        note_parts.push(format!("Wigle: {e}"));
+    }
+    Ok((locs.len() as u32, Some(note_parts.join("; "))))
+}
+
+/// Last account-free scan-area fix (BeaconDB).
+#[tauri::command]
+pub fn get_scan_location(state: State<'_, AppState>) -> Option<crate::types::ScanFix> {
+    state.store.query(|c| store::last_scan_fix(c))
 }
 
 /// Known cell towers near a point (OpenCellID crowd-sourced DB).

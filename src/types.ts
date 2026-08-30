@@ -316,6 +316,16 @@ export interface ApInfo {
 }
 
 /** §25 — one OpenCellID tower record near a point. */
+/** Account-free area fix from BeaconDB (v1.4.1). */
+export interface ScanFix {
+  ts: number;
+  lat: number;
+  lon: number;
+  accuracy_m: number;
+  fallback_ip: boolean;
+  source: string;
+}
+
 export interface TowerInfo {
   lat: number;
   lon: number;

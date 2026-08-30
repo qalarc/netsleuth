@@ -173,6 +173,14 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             count INTEGER NOT NULL DEFAULT 1
         );
         CREATE INDEX IF NOT EXISTS idx_alerts_last ON alerts(last_seen);
+        CREATE TABLE IF NOT EXISTS scan_locations(
+            ts INTEGER PRIMARY KEY,
+            lat REAL NOT NULL,
+            lon REAL NOT NULL,
+            accuracy_m REAL,
+            fallback_ip INTEGER NOT NULL DEFAULT 0,
+            source TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS aps(
             bssid TEXT PRIMARY KEY,
             ssid TEXT,
@@ -934,4 +942,31 @@ pub fn set_ap_location(conn: &Connection, bssid: &str, lat: f64, lon: f64) {
         "UPDATE aps SET lat = ?1, lon = ?2 WHERE bssid = ?3",
         params![lat, lon, bssid],
     );
+}
+
+pub fn insert_scan_fix(conn: &Connection, f: &crate::types::ScanFix) {
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO scan_locations(ts, lat, lon, accuracy_m, fallback_ip, source)
+         VALUES(?1,?2,?3,?4,?5,?6)",
+        params![f.ts, f.lat, f.lon, f.accuracy_m, f.fallback_ip as i64, f.source],
+    );
+}
+
+pub fn last_scan_fix(conn: &Connection) -> Option<crate::types::ScanFix> {
+    conn.query_row(
+        "SELECT ts, lat, lon, accuracy_m, fallback_ip, source FROM scan_locations
+         ORDER BY ts DESC LIMIT 1",
+        [],
+        |r| {
+            Ok(crate::types::ScanFix {
+                ts: r.get(0)?,
+                lat: r.get(1)?,
+                lon: r.get(2)?,
+                accuracy_m: r.get(3)?,
+                fallback_ip: r.get::<_, i64>(4)? != 0,
+                source: r.get(5)?,
+            })
+        },
+    )
+    .ok()
 }

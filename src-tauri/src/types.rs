@@ -73,6 +73,17 @@ pub struct ApInfo {
     pub lon: Option<f64>,
 }
 
+/// Area-level scan position (BeaconDB, zero-account; contract v1.4.1).
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ScanFix {
+    pub ts: i64,
+    pub lat: f64,
+    pub lon: f64,
+    pub accuracy_m: f64,
+    pub fallback_ip: bool,
+    pub source: String, // "beacondb"
+}
+
 /// Known cell tower from OpenCellID (contract v1.4).
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct TowerInfo {

@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 import type {
+  ScanFix,
   ActivityEvent,
   AlertInfo,
   ApInfo,
@@ -249,6 +250,10 @@ export function getWifiAps(limit: number | null): Promise<ApInfo[] | undefined> 
  * Wigle keys in settings). Returns `[newlyLocatedCount, error|null]`; the
  * command itself rejects only on IPC failure (already toasted via `cmd`).
  */
+export function getScanLocation(): Promise<ScanFix | null | undefined> {
+  return cmd<ScanFix | null>("get_scan_location");
+}
+
 export function wigleGeolocate(limit: number | null): Promise<WigleResult | undefined> {
   return cmd<WigleResult>("wigle_geolocate", { limit });
 }

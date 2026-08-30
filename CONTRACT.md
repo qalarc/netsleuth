@@ -300,3 +300,19 @@ interface TowerInfo {
 ```
 ### Settings gains: `wigle_api_name`, `wigle_api_token`, `opencellid_key` (all optional strings; free accounts: wigle.net + opencellid.org)
 ### MCP: new tool `wifi_aps`
+
+---
+
+## Additions — v1.4.1 (zero-account geolocation)
+
+`wigle_geolocate` (unchanged signature, now `[count, note]` where `note` is
+informational, NOT an error) always performs an account-free **BeaconDB**
+area fix first (MLS-compatible POST to beacondb.net) and stores it; new
+command `get_scan_location` → `ScanFix | null`:
+
+```ts
+interface ScanFix { ts: number; lat: number; lon: number; accuracy_m: number; fallback_ip: boolean; source: string; }
+```
+
+Wigle per-AP precision remains OPTIONAL (keys in settings). The UI no longer
+gates geolocation on Wigle keys.

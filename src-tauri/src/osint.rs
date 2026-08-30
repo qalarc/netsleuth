@@ -14,6 +14,61 @@
 
 use serde_json::Value;
 
+/// Zero-account geolocation via BeaconDB (beacondb.net) — the open
+/// community successor to Mozilla Location Service. MLS-compatible JSON.
+/// Returns one position estimate for a SET of observed BSSIDs (your scan
+/// area), not per-AP coordinates.
+pub struct BeaconDbClient {
+    agent: reqwest::blocking::Client,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+pub struct GeoFix {
+    pub lat: f64,
+    pub lon: f64,
+    pub accuracy_m: f64,
+    /// true when the DB lacked our BSSIDs and fell back to IP-area estimate
+    pub fallback_ip: bool,
+}
+
+impl BeaconDbClient {
+    pub fn new() -> Self {
+        Self {
+            agent: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .user_agent(concat!("netsleuth/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .expect("http client"),
+        }
+    }
+
+    pub fn geolocate(&self, bssids: &[String]) -> Result<GeoFix, String> {
+        let aps: Vec<serde_json::Value> = bssids
+            .iter()
+            .map(|b| serde_json::json!({ "macAddress": b.to_uppercase() }))
+            .collect();
+        let resp = self
+            .agent
+            .post("https://beacondb.net/v1/geolocate")
+            .json(&serde_json::json!({ "wifiAccessPoints": aps }))
+            .send()
+            .map_err(|e| format!("beacondb request failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("beacondb HTTP {}", resp.status()));
+        }
+        let v: serde_json::Value = resp.json().map_err(|e| format!("beacondb bad json: {e}"))?;
+        let loc = v
+            .get("location")
+            .ok_or("beacondb returned no location")?;
+        Ok(GeoFix {
+            lat: loc.get("lat").and_then(|x| x.as_f64()).unwrap_or_default(),
+            lon: loc.get("lng").or_else(|| loc.get("lon")).and_then(|x| x.as_f64()).unwrap_or_default(),
+            accuracy_m: v.get("accuracy").and_then(|x| x.as_f64()).unwrap_or_default(),
+            fallback_ip: v.get("fallback").and_then(|x| x.as_str()) == Some("ipf"),
+        })
+    }
+}
+
 pub struct WigleClient {
     pub api_name: String,
     pub token: String,

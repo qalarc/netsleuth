@@ -80,6 +80,7 @@ pub fn run() {
             commands::scan_wifi,
             commands::get_wifi_aps,
             commands::wigle_geolocate,
+            commands::get_scan_location,
             commands::opencellid_towers,
             commands::test_ssh,
             commands::start_capture,

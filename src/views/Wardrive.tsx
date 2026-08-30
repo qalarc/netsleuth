@@ -27,7 +27,7 @@ import {
 import * as api from "../lib/api";
 import { timeAgo } from "../lib/format";
 import { useStore } from "../store";
-import type { ApInfo, AppSettings, TowerInfo } from "../types";
+import type { ApInfo, AppSettings, ScanFix, TowerInfo } from "../types";
 import { EmptyState, Skeleton } from "../components/EmptyState";
 
 const POLL_MS = 15_000;
@@ -190,6 +190,14 @@ export function Wardrive() {
   }, []);
 
   /** Apply the AP list only when it actually changed (skips no-op polls). */
+  const [scanFix, setScanFix] = useState<ScanFix | null>(null);
+  const scanFixRef = useRef<L.Circle | null>(null);
+  const scanFixMarkerRef = useRef<L.Marker | null>(null);
+  const refreshScanFix = useCallback(async () => {
+    const f = await api.getScanLocation();
+    if (f) setScanFix(f);
+  }, []);
+
   const applyAps = useCallback((list: ApInfo[]): void => {
     const sig = JSON.stringify(list);
     if (sig !== sigRef.current) {
@@ -239,6 +247,7 @@ export function Wardrive() {
       marker.bindPopup(apPopupHtml(ap, nowSec));
       marker.addTo(layer);
       markersRef.current.set(ap.bssid, marker);
+      void 0;
     }
     if (!fittedRef.current) fitToMarkers();
   }, [aps, fitToMarkers]);
@@ -272,7 +281,6 @@ export function Wardrive() {
     [aps],
   );
 
-  const hasWigleKeys = !!(settings?.wigle_api_name && settings?.wigle_api_token);
 
   const rows = useMemo(() => {
     if (aps === null) return null;
@@ -307,18 +315,15 @@ export function Wardrive() {
     const r = await api.wigleGeolocate(100);
     setLocating(false);
     if (!r) return; // IPC failure — already toasted by the api layer
-    const [count, err] = r;
-    if (err) {
-      toast(err, "error");
-      return;
-    }
+    const [count, note] = r;
     if (count > 0) {
-      toast(`${count} APs located`, "success");
-    } else {
-      toast("No new APs located — BSSIDs may be absent from the Wigle DB", "info");
+      toast(`${count} APs located precisely${note ? ` — ${note}` : ""}`, "success");
+    } else if (note) {
+      toast(note, "info");
     }
     const list = await api.getWifiAps(null);
     if (list) applyAps(list);
+    await refreshScanFix();
   };
 
   /** Row click → pan to marker, open popup, pulse the dot. */
@@ -367,10 +372,41 @@ export function Wardrive() {
 
   /* ── render ── */
 
-  const geolocateDisabled =
-    (settings !== null && !hasWigleKeys) || locating || scanning;
+  const geolocateDisabled = locating || scanning;
   const towersBtnDisabled =
     towersBusy || firstLocated === null || (!!settings && !settings.opencellid_key);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !scanFix) return;
+    const latlng: L.LatLngExpression = [scanFix.lat, scanFix.lon];
+    if (!scanFixRef.current) {
+      scanFixRef.current = L.circle(latlng, {
+        radius: Math.max(scanFix.accuracy_m, 250),
+        color: "#22d3ee",
+        weight: 1,
+        fillColor: "#22d3ee",
+        fillOpacity: 0.08,
+      }).addTo(map);
+      scanFixMarkerRef.current = L.marker(latlng, {
+        icon: L.divIcon({
+          className: "",
+          html: `<div style="width:14px;height:14px;border:2px solid #22d3ee;border-radius:50%;background:rgba(34,211,238,.25);box-shadow:0 0 0 4px rgba(34,211,238,.15)"></div>`,
+          iconSize: [14, 14],
+          iconAnchor: [7, 7],
+        }),
+        interactive: true,
+      })
+        .bindPopup(
+          `<b>Your scan area</b><br>${scanFix.fallback_ip ? "IP-level estimate" : "BSSID-resolved"} — ±${Math.round(scanFix.accuracy_m).toLocaleString()} m<br><span style="color:#71717a">via BeaconDB (no account)</span>`,
+        )
+        .addTo(map);
+    } else {
+      scanFixRef.current.setLatLng(latlng);
+      scanFixRef.current.setRadius(Math.max(scanFix.accuracy_m, 250));
+      scanFixMarkerRef.current?.setLatLng(latlng);
+    }
+  }, [scanFix]);
 
   return (
     <div className="space-y-4">
@@ -390,11 +426,7 @@ export function Wardrive() {
             type="button"
             onClick={() => void runGeolocate()}
             disabled={geolocateDisabled}
-            title={
-              settings !== null && !hasWigleKeys
-                ? "add Wigle keys in Capture → OSINT"
-                : "Resolve AP BSSIDs against the Wigle.net DB"
-            }
+            title="Locate your scan area (account-free BeaconDB); optional Wigle keys add per-AP precision"
             className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-3.5 py-2 text-sm font-semibold text-zinc-300 transition-colors hover:border-cyan-400/40 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-zinc-700 disabled:hover:text-zinc-300"
           >
             {locating ? (
@@ -402,7 +434,7 @@ export function Wardrive() {
             ) : (
               <MapPin className="h-4 w-4" />
             )}
-            {locating ? "Geolocating…" : "Geolocate via Wigle"}
+            {locating ? "Locating…" : "Locate"}
           </button>
           <button
             type="button"

@@ -634,7 +634,7 @@ export function Capture() {
       <section className="rounded-xl border border-zinc-800/80 bg-zinc-900/60 transition-colors hover:border-zinc-700">
         <div className="border-b border-zinc-800/60 px-4 py-2.5">
           <span className="label flex items-center gap-2">
-            <KeyRound className="h-3.5 w-3.5" /> OSINT API keys (free accounts)
+            <KeyRound className="h-3.5 w-3.5" /> Optional OSINT keys — not required
           </span>
         </div>
         <div className="grid gap-4 p-4 sm:grid-cols-2">
