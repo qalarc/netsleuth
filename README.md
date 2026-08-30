@@ -108,6 +108,26 @@ netsleuth/
 └── CONTRACT.md           # frozen backend ⇄ frontend API contract
 ```
 
+## Troubleshooting
+
+**"I started monitoring but see no traffic or devices"** — in order of likelihood:
+
+1. **Router has no SSH.** SSH mode needs an SSH-capable router (OpenWrt, pfSense,
+   a Linux box…). Stock consumer routers (D-Link, TP-Link, Netgear ISP boxes)
+   usually don't expose it — the SSH card now runs a preflight test and tells
+   you immediately. Alternative: flash OpenWrt if your model is supported.
+2. **tcpdump lacks capture permission locally.** "This machine" mode shells out
+   to tcpdump, which needs `CAP_NET_RAW`:
+   `sudo setcap cap_net_raw,cap_net_admin=eip "$(which tcpdump)"` (once), or
+   launch the app with sudo.
+3. **Switched/WiFi networks hide other devices' traffic.** A capture on YOUR
+   interface physically only sees: your own traffic + broadcasts (ARP, DHCP,
+   mDNS). NetSleuth uses those broadcasts to *discover and list* every LAN
+   device (with vendor/hostnames) — but per-device **traffic** for other
+   devices is only visible from the router (SSH mode) or a mirror port.
+   "This machine" mode = full site/traffic analysis of the monitoring
+   computer + device inventory of the whole LAN.
+
 ## Limitations / roadmap
 
 - QUIC (UDP/443 v1) and DoH/DoT hide site names (ECH worsens this) — bytes

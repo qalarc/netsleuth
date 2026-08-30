@@ -30,6 +30,33 @@ fn now() -> i64 {
     chrono::Local::now().timestamp()
 }
 
+/// Rewrite raw ssh/tcpdump stderr into actionable guidance.
+fn friendly_capture_error(line: &str) -> String {
+    let l = line.to_lowercase();
+    if l.contains("you don't have permission")
+        || l.contains("cap_net_raw")
+        || (l.contains("permission denied") && l.contains("tcpdump"))
+    {
+        return "tcpdump has no capture permission on THIS machine. Fix once: sudo setcap cap_net_raw,cap_net_admin=eip \"$(which tcpdump)\" — or launch NetSleuth with sudo.".to_string();
+    }
+    if l.contains("permission denied") && (l.contains("publickey") || l.contains("password")) {
+        return format!(
+            "{line} — SSH key not accepted. Run: ssh-copy-id <user>@<router>"
+        );
+    }
+    if l.contains("connect to host") || l.contains("connection refused") || l.contains("no route to host") {
+        return format!(
+            "{line} — the router likely has no SSH (stock D-Link/TP-Link/Netgear don't). Network-wide mode needs an SSH-capable router (e.g. OpenWrt); monitor THIS machine in the meantime."
+        );
+    }
+    if l.contains("command not found") || l.contains("not found") {
+        return format!(
+            "{line} — install tcpdump on the router (OpenWrt: opkg install tcpdump)"
+        );
+    }
+    line.to_string()
+}
+
 fn set_state(cap: &Arc<Mutex<CapState>>, app: &AppHandle, state: &'static str, message: Option<String>) {
     {
         let mut c = cap.lock().unwrap();
@@ -169,9 +196,10 @@ pub fn start_capture(
                     eng_pkt.lock().unwrap().process(ts_us, linktype, orig_len, data);
                 },
                 move |line| {
+                    let friendly = friendly_capture_error(line);
                     let mut c = cap_stderr.lock().unwrap();
                     if c.state == "running" || c.state == "starting" {
-                        c.message = Some(line.to_string());
+                        c.message = Some(friendly);
                     }
                     drop(c);
                     eprintln!("[capture] {line}");

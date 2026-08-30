@@ -61,6 +61,8 @@ pub struct DeviceLive {
     pub down: u64,
     pub flushed_up: u64,
     pub flushed_down: u64,
+    persisted: bool,
+    flushed_hostname: Option<String>,
     ring_up: [u64; RING],
     ring_down: [u64; RING],
     ring_idx: usize,
@@ -79,6 +81,8 @@ impl DeviceLive {
             down: 0,
             flushed_up: 0,
             flushed_down: 0,
+            persisted: false,
+            flushed_hostname: None,
             ring_up: [0; RING],
             ring_down: [0; RING],
             ring_idx: 0,
@@ -234,6 +238,15 @@ impl Engine {
         self.devices.get_mut(mac).unwrap()
     }
 
+    /// Register a LAN neighbor as a device (from ARP/DHCP), updating liveness.
+    fn observe_neighbor(&mut self, mac: &[u8; 6], ip: IpAddr, ts: i64) {
+        let d = self.device_entry(mac, ts);
+        d.last = d.last.max(ts);
+        if d.ip.is_none() {
+            d.ip = Some(ip);
+        }
+    }
+
     fn learn_ip_mac(&mut self, ip: IpAddr, mac: &[u8; 6], ts: i64) {
         if let Some((old, _)) = self.ip_mac.get(&ip) {
             if old != mac {
@@ -330,11 +343,23 @@ impl Engine {
         let ts = ts_us / 1_000_000;
         self.packets_seen += 1;
 
-        // ARP: IP↔MAC learning only.
+        // ARP: IP↔MAC learning + passive neighbor discovery. ARP frames are
+        // broadcast on the LAN, so even a local-only capture sees every
+        // neighbor and can list devices it cannot attribute traffic for.
         if let Some(arp) = &pkt.arp {
-            self.learn_ip_mac(IpAddr::V4(arp.sender_ip), &arp.sender_mac, ts);
-            if arp.is_reply && arp.target_mac != [0; 6] {
-                self.learn_ip_mac(IpAddr::V4(arp.target_ip), &arp.target_mac, ts);
+            let sip = IpAddr::V4(arp.sender_ip);
+            if !parser::is_bcast_or_mcast(&arp.sender_mac) {
+                self.learn_ip_mac(sip, &arp.sender_mac, ts);
+                self.observe_neighbor(&arp.sender_mac, sip, ts);
+            }
+            if arp.is_reply
+                && arp.target_mac != [0; 6]
+                && arp.target_mac != arp.sender_mac
+                && !parser::is_bcast_or_mcast(&arp.target_mac)
+            {
+                let tip = IpAddr::V4(arp.target_ip);
+                self.learn_ip_mac(tip, &arp.target_mac, ts);
+                self.observe_neighbor(&arp.target_mac, tip, ts);
             }
         }
 
@@ -681,7 +706,11 @@ impl Engine {
     pub fn flush(&mut self, now: i64) -> FlushPayload {
         let mut devices = Vec::new();
         for (mac, d) in self.devices.iter_mut() {
-            if d.up > d.flushed_up || d.down > d.flushed_down {
+            if !d.persisted
+                || d.up > d.flushed_up
+                || d.down > d.flushed_down
+                || d.hostname != d.flushed_hostname
+            {
                 devices.push(DeviceFlush {
                     mac: *mac,
                     hostname: d.hostname.clone(),
@@ -694,6 +723,8 @@ impl Engine {
                 });
                 d.flushed_up = d.up;
                 d.flushed_down = d.down;
+                d.flushed_hostname = d.hostname.clone();
+                d.persisted = true;
             }
         }
 
@@ -989,5 +1020,40 @@ mod tests {
         // flows tracked for the device
         let flows = engine.flows_for_mac(&MAC_A, 10);
         assert!(flows.iter().any(|f| f.remote_ip == SITE_IP.to_string() && f.host.as_deref() == Some("example.com")));
+    }
+    #[test]
+    fn arp_discovers_neighbors_without_traffic() {
+        // ARP reply broadcast: neighbor 192.168.1.37 announces itself to us.
+        let mut arp = Vec::new();
+        arp.extend_from_slice(&[0, 1]); // htype ethernet
+        arp.extend_from_slice(&[0x08, 0x00]); // ptype ipv4
+        arp.push(6); // hlen
+        arp.push(4); // plen
+        arp.extend_from_slice(&[0, 2]); // oper = reply
+        arp.extend_from_slice(&[0x74, 0xA7, 0xEA, 0x77, 0x19, 0x3F]); // sha
+        arp.extend_from_slice(&[192, 168, 1, 37]); // spa
+        arp.extend_from_slice(&MAC_A); // tha (us)
+        arp.extend_from_slice(&[192, 168, 1, 42]); // tpa
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&[0xff; 6]); // dst broadcast
+        frame.extend_from_slice(&MAC_A);
+        frame.extend_from_slice(&[0x08, 0x06]); // ARP
+        frame.extend_from_slice(&arp);
+
+        let mut engine = Engine::new(1_700_000_000, None);
+        engine.process(1_700_000_000, 1, frame.len() as u32, &frame);
+
+        let neigh = [0x74, 0xA7, 0xEA, 0x77, 0x19, 0x3F];
+        assert!(engine.devices.contains_key(&neigh), "ARP neighbor discovered");
+        let d = &engine.devices[&neigh];
+        assert_eq!(d.ip, Some(IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 37))));
+        assert_eq!(d.up, 0, "no traffic invented");
+
+        // zero-byte discovered devices must still persist on flush
+        let flush = engine.flush(1_700_000_010);
+        assert!(
+            flush.devices.iter().any(|df| df.mac == neigh),
+            "neighbor included in flush despite zero bytes"
+        );
     }
 }

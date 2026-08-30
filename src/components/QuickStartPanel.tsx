@@ -18,10 +18,12 @@ import {
   Monitor,
   Play,
   Router,
+  TriangleAlert,
   Wifi,
   Zap,
 } from "lucide-react";
 import { timeAgo, truncateMiddle } from "../lib/format";
+import { testSsh } from "../lib/api";
 import { useStore } from "../store";
 import type { CaptureSource } from "../types";
 
@@ -156,19 +158,38 @@ export function QuickStartPanel() {
     if (gw && !ssh.host) setSsh((s) => (s.host ? s : { ...s, host: gw }));
   }, [networkHints, ssh.host]);
 
-  const startSsh = () => {
+  const [sshTesting, setSshTesting] = useState(false);
+  const [sshError, setSshError] = useState<string | null>(null);
+
+  // Preflight before starting: reach the router over SSH and require
+  // tcpdump there. A dead preflight explains itself inline instead of a
+  // capture that silently never starts (e.g. stock routers without SSH).
+  const startSsh = async () => {
+    setSshError(null);
     if (!ssh.host.trim()) {
-      toast("Enter your router's IP first", "error");
+      setSshError("Enter your router's IP first");
       return;
     }
-    void startSource({
+    const source: CaptureSource = {
       type: "ssh",
       host: ssh.host.trim(),
       user: ssh.user.trim() || "root",
       port: 22,
       interface: ssh.interface.trim() || "br-lan",
       bpf: null,
-    });
+    };
+    setSshTesting(true);
+    const res = await testSsh(source);
+    setSshTesting(false);
+    if (!res) {
+      setSshError("Could not run the SSH probe (backend offline?)");
+      return;
+    }
+    if (!res.ok || !res.tcpdump_found) {
+      setSshError(res.message);
+      return;
+    }
+    void startSource(source);
   };
 
   /* ── Shared bits ─────────────────────────────────────────────────────── */
@@ -280,7 +301,18 @@ export function QuickStartPanel() {
               />
             </div>
           </div>
-          <StartBtn onClick={startSsh} label="Start" disabled={disabled} busy={busy} />
+          <StartBtn
+            onClick={() => void startSsh()}
+            label={sshTesting ? "Testing router…" : "Start"}
+            disabled={disabled}
+            busy={busy || sshTesting}
+          />
+          {sshError ? (
+            <p className="flex items-start gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1.5 text-[11px] leading-relaxed text-rose-300">
+              <TriangleAlert className="mt-px h-3.5 w-3.5 shrink-0" />
+              <span>{sshError}</span>
+            </p>
+          ) : null}
           <button
             type="button"
             onClick={() => setView("capture")}
