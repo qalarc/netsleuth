@@ -555,6 +555,75 @@ pub fn get_heatmap(state: State<'_, AppState>, days: i64) -> Vec<HeatCell> {
     state.store.query(move |c| store::heatmap(c, nowt, days))
 }
 
+// ---------------------------------------------------------------------------
+// Wardrive + OSINT (contract v1.4)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn scan_wifi(state: State<'_, AppState>, interface: Option<String>) -> Result<Vec<crate::types::ApInfo>, String> {
+    let aps = crate::wardrive::scan(interface.as_deref())?;
+    let aps_for_db = aps.clone();
+    state.store.query(move |c| store::upsert_aps(c, &aps_for_db));
+    let aps2 = aps.clone();
+    Ok(state.store.query(move |c| store::get_aps(c, 500)) .into_iter()
+        .map(|mut a| {
+            // overlay freshest live signal for scanned ones
+            if let Some(live) = aps2.iter().find(|x| x.bssid == a.bssid) {
+                a.signal = live.signal;
+            }
+            a
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub fn get_wifi_aps(state: State<'_, AppState>, limit: Option<u32>) -> Vec<crate::types::ApInfo> {
+    let limit = limit.unwrap_or(500).clamp(1, 2000) as usize;
+    state.store.query(move |c| store::get_aps(c, limit))
+}
+
+/// Geolocate unlocated APs via Wigle (needs settings.wigle_api_name/token).
+/// Returns (geolocated_count, error_message).
+#[tauri::command]
+pub fn wigle_geolocate(state: State<'_, AppState>, limit: Option<u32>) -> Result<(u32, Option<String>), String> {
+    let (name, token) = {
+        let s = state.settings.lock().unwrap();
+        match (&s.wigle_api_name, &s.wigle_api_token) {
+            (Some(n), Some(t)) if !n.is_empty() && !t.is_empty() => (n.clone(), t.clone()),
+            _ => return Err("no Wigle API credentials — add them in Capture → OSINT keys".into()),
+        }
+    };
+    let limit = limit.unwrap_or(25).clamp(1, 100) as usize;
+    let bssids = state.store.query(move |c| store::unlocated_bssids(c, limit));
+    if bssids.is_empty() {
+        return Ok((0, Some("all known APs already geolocated".into())));
+    }
+    let client = crate::osint::WigleClient::new(&name, &token);
+    let (locs, err) = client.lookup_bssids(&bssids);
+    let n = locs.len() as u32;
+    for loc in &locs {
+        if let (Some(lat), Some(lon)) = (loc.lat, loc.lon) {
+            let b = loc.bssid.clone();
+            state.store.query(move |c| store::set_ap_location(c, &b, lat, lon));
+        }
+    }
+    Ok((n, err))
+}
+
+/// Known cell towers near a point (OpenCellID crowd-sourced DB).
+#[tauri::command]
+pub fn opencellid_towers(state: State<'_, AppState>, lat: f64, lon: f64) -> Result<Vec<crate::types::TowerInfo>, String> {
+    let key = {
+        let s = state.settings.lock().unwrap();
+        s.opencellid_key
+            .clone()
+            .filter(|k| !k.is_empty())
+            .ok_or("no OpenCellID key — add it in Capture → OSINT keys")?
+    };
+    let client = crate::osint::OpenCellIdClient::new(&key);
+    client.nearby_towers(lat, lon)
+}
+
 #[tauri::command]
 pub fn get_alerts(state: State<'_, AppState>, hours: i64, include_dismissed: bool) -> Vec<AlertInfo> {
     let nowt = now();

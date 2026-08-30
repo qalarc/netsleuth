@@ -5,6 +5,7 @@ import {
   Globe,
   LayoutDashboard,
   LoaderCircle,
+  LocateFixed,
   MonitorSmartphone,
   Play,
   Radar,
@@ -24,6 +25,7 @@ import { Dashboard } from "./views/Dashboard";
 import { Devices } from "./views/Devices";
 import { DeviceDetail } from "./views/DeviceDetail";
 import { Sites } from "./views/Sites";
+import { Wardrive } from "./views/Wardrive";
 import { Security } from "./views/Security";
 import { History } from "./views/History";
 import { Capture } from "./views/Capture";
@@ -32,6 +34,7 @@ const NAV: Array<{ id: View; label: string; icon: ComponentType<{ className?: st
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "devices", label: "Devices", icon: MonitorSmartphone },
   { id: "sites", label: "Sites", icon: Globe },
+  { id: "wardrive", label: "Wardrive", icon: LocateFixed },
   { id: "security", label: "Security", icon: Shield },
   { id: "history", label: "History", icon: ChartColumn },
   { id: "capture", label: "Capture", icon: Radio },
@@ -316,6 +319,7 @@ function Shell() {
             {page === "dashboard" ? <Dashboard /> : null}
             {page === "devices" ? <Devices /> : null}
             {page === "sites" ? <Sites /> : null}
+            {page === "wardrive" ? <Wardrive /> : null}
             {page === "security" ? <Security /> : null}
             {page === "history" ? <History /> : null}
             {page === "capture" ? <Capture /> : null}

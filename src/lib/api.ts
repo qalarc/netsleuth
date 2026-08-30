@@ -11,6 +11,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
   ActivityEvent,
   AlertInfo,
+  ApInfo,
   AppSettings,
   CaptureSource,
   DashboardSummary,
@@ -25,6 +26,8 @@ import type {
   SshTestResult,
   Status,
   TimelinePoint,
+  TowerInfo,
+  WigleResult,
 } from "../types";
 
 export type {
@@ -33,6 +36,7 @@ export type {
   AlertInfo,
   AlertSeverity,
   AlertsEvent,
+  ApInfo,
   AppSettings,
   CaptureSource,
   CaptureState,
@@ -52,6 +56,8 @@ export type {
   SshTestResult,
   Status,
   TimelinePoint,
+  TowerInfo,
+  WigleResult,
 } from "../types";
 
 type ErrorListener = (message: string) => void;
@@ -220,6 +226,39 @@ export function getSecuritySummary(
   hours: number,
 ): Promise<SecuritySummary | undefined> {
   return cmd<SecuritySummary>("get_security_summary", { hours });
+}
+
+/* ── v1.4 (wardrive + OSINT) ──────────────────────────────────────────── */
+
+/**
+ * §22 — trigger an unprivileged managed-mode Wi-Fi scan (nmcli / iw) and
+ * upsert the results. Takes ~2–5 s; returns the full known-AP list.
+ * `iface` null = let the backend pick the default wireless interface.
+ */
+export function scanWifi(iface: string | null): Promise<ApInfo[] | undefined> {
+  return cmd<ApInfo[]>("scan_wifi", { interface: iface });
+}
+
+/** §23 — known APs, newest-signal order decided backend-side; null = all. */
+export function getWifiAps(limit: number | null): Promise<ApInfo[] | undefined> {
+  return cmd<ApInfo[]>("get_wifi_aps", { limit });
+}
+
+/**
+ * §24 — geolocate unlocated BSSIDs against the Wigle.net DB (needs the
+ * Wigle keys in settings). Returns `[newlyLocatedCount, error|null]`; the
+ * command itself rejects only on IPC failure (already toasted via `cmd`).
+ */
+export function wigleGeolocate(limit: number | null): Promise<WigleResult | undefined> {
+  return cmd<WigleResult>("wigle_geolocate", { limit });
+}
+
+/** §25 — OpenCellID towers near a point (needs `settings.opencellid_key`). */
+export function opencellidTowers(
+  lat: number,
+  lon: number,
+): Promise<TowerInfo[] | undefined> {
+  return cmd<TowerInfo[]>("opencellid_towers", { lat, lon });
 }
 
 /* ── Misc ──────────────────────────────────────────────────────────────── */

@@ -173,6 +173,19 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             count INTEGER NOT NULL DEFAULT 1
         );
         CREATE INDEX IF NOT EXISTS idx_alerts_last ON alerts(last_seen);
+        CREATE TABLE IF NOT EXISTS aps(
+            bssid TEXT PRIMARY KEY,
+            ssid TEXT,
+            vendor TEXT,
+            channel INTEGER,
+            freq_mhz INTEGER,
+            signal INTEGER,
+            security TEXT,
+            first_seen INTEGER NOT NULL,
+            last_seen INTEGER NOT NULL,
+            lat REAL,
+            lon REAL
+        );
         "#,
     )
     .map_err(|e| e.to_string())
@@ -839,4 +852,86 @@ pub fn peak_hour(conn: &Connection, mac: &str) -> Option<TimelinePoint> {
         },
     )
     .ok()
+}
+
+// ---------------------------------------------------------------------------
+// Wardrive AP storage (v1.4)
+// ---------------------------------------------------------------------------
+
+pub fn upsert_aps(conn: &Connection, aps: &[crate::types::ApInfo]) {
+    for a in aps {
+        let _ = conn.execute(
+            "INSERT INTO aps(bssid, ssid, vendor, channel, freq_mhz, signal, security, first_seen, last_seen, lat, lon)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+             ON CONFLICT(bssid) DO UPDATE SET
+                ssid = COALESCE(excluded.ssid, aps.ssid),
+                vendor = COALESCE(excluded.vendor, aps.vendor),
+                channel = excluded.channel,
+                freq_mhz = excluded.freq_mhz,
+                signal = excluded.signal,
+                security = COALESCE(excluded.security, aps.security),
+                last_seen = excluded.last_seen,
+                lat = COALESCE(excluded.lat, aps.lat),
+                lon = COALESCE(excluded.lon, aps.lon)",
+            params![
+                a.bssid,
+                a.ssid,
+                a.vendor,
+                a.channel.map(|v| v as i64),
+                a.freq_mhz.map(|v| v as i64),
+                a.signal.map(|v| v as i64),
+                a.security,
+                a.first_seen,
+                a.last_seen,
+                a.lat,
+                a.lon,
+            ],
+        );
+    }
+}
+
+pub fn get_aps(conn: &Connection, limit: usize) -> Vec<crate::types::ApInfo> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT bssid, ssid, vendor, channel, freq_mhz, signal, security, first_seen, last_seen, lat, lon
+         FROM aps ORDER BY last_seen DESC LIMIT ?1",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map(params![limit as i64], |r| {
+        Ok(crate::types::ApInfo {
+            bssid: r.get(0)?,
+            ssid: r.get(1)?,
+            vendor: r.get(2)?,
+            channel: r.get::<_, Option<i64>>(3)?.map(|v| v as u32),
+            freq_mhz: r.get::<_, Option<i64>>(4)?.map(|v| v as u32),
+            signal: r.get::<_, Option<i64>>(5)?.map(|v| v as i32),
+            security: r.get(6)?,
+            first_seen: r.get(7)?,
+            last_seen: r.get(8)?,
+            lat: r.get(9)?,
+            lon: r.get(10)?,
+        })
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
+pub fn unlocated_bssids(conn: &Connection, limit: usize) -> Vec<String> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT bssid FROM aps WHERE lat IS NULL ORDER BY last_seen DESC LIMIT ?1",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0)) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
+pub fn set_ap_location(conn: &Connection, bssid: &str, lat: f64, lon: f64) {
+    let _ = conn.execute(
+        "UPDATE aps SET lat = ?1, lon = ?2 WHERE bssid = ?3",
+        params![lat, lon, bssid],
+    );
 }

@@ -8,11 +8,13 @@
 mod capture;
 mod commands;
 mod engine;
+mod osint;
 mod oui;
 mod parser;
 mod security;
 mod store;
 mod types;
+mod wardrive;
 
 use commands::AppState;
 use std::sync::{Arc, Mutex};
@@ -75,6 +77,10 @@ pub fn run() {
             commands::get_alerts,
             commands::dismiss_alert,
             commands::get_security_summary,
+            commands::scan_wifi,
+            commands::get_wifi_aps,
+            commands::wigle_geolocate,
+            commands::opencellid_towers,
             commands::test_ssh,
             commands::start_capture,
             commands::stop_capture,

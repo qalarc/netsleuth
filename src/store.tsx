@@ -42,6 +42,7 @@ export type View =
   | "device"
   | "devices"
   | "sites"
+  | "wardrive"
   | "security"
   | "history"
   | "capture";

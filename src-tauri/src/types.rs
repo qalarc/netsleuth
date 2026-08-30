@@ -57,6 +57,35 @@ pub struct SecuritySummary {
     pub info: u64,
 }
 
+/// Nearby WiFi AP observed by a wardrive scan (contract v1.4).
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ApInfo {
+    pub bssid: String,
+    pub ssid: Option<String>,
+    pub vendor: Option<String>,
+    pub channel: Option<u32>,
+    pub freq_mhz: Option<u32>,
+    pub signal: Option<i32>,
+    pub security: Option<String>,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+}
+
+/// Known cell tower from OpenCellID (contract v1.4).
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct TowerInfo {
+    pub lat: f64,
+    pub lon: f64,
+    pub radio: Option<String>,
+    pub mcc: Option<u32>,
+    pub mnc: Option<u32>,
+    pub cid: Option<i64>,
+    pub range_m: Option<f64>,
+    pub samples: Option<u64>,
+}
+
 /// A previously-used capture source offered for one-click restart.
 #[derive(Debug, Clone, Serialize)]
 pub struct RecentSource {
@@ -251,6 +280,14 @@ pub struct AppSettings {
     /// Start the most-recent capture source automatically on app launch.
     #[serde(default)]
     pub auto_resume: bool,
+    /// Wigle.net API credentials (free account) for AP/BT geolocation.
+    #[serde(default)]
+    pub wigle_api_name: Option<String>,
+    #[serde(default)]
+    pub wigle_api_token: Option<String>,
+    /// OpenCellID key for tower lookups.
+    #[serde(default)]
+    pub opencellid_key: Option<String>,
 }
 
 fn default_retention() -> u32 {
@@ -264,6 +301,9 @@ impl Default for AppSettings {
             dns_doh_note: true,
             retention_days: 90,
             auto_resume: false,
+            wigle_api_name: None,
+            wigle_api_token: None,
+            opencellid_key: None,
         }
     }
 }

@@ -273,3 +273,30 @@ Stdio JSON-RPC MCP server, READ-ONLY access to the same SQLite DB, for AI
 agents. Tools: `status`, `devices`, `device_detail`, `sites`, `search_sites`,
 `events`, `timeline`, `security_alerts`, `heatmap`. DB path: argv[1] or
 `NETSLEUTH_DB` env or the default app-data path.
+
+---
+
+## Additions — v1.4 (wardrive + OSINT)
+
+### 22. `scan_wifi(interface: string | null)` → `Vec<ApInfo>` (errors with message)
+Runs an unprivileged managed-mode scan (nmcli, iw fallback), upserts results
+into the `aps` table, returns the full known-AP list.
+### 23. `get_wifi_aps(limit: number | null)` → `Vec<ApInfo>`
+### 24. `wigle_geolocate(limit: number | null)` → `[count, error|null]`
+Geolocates unlocated BSSIDs via Wigle (needs `settings.wigle_api_name/token`).
+### 25. `opencellid_towers(lat: number, lon: number)` → `Vec<TowerInfo>` (needs `settings.opencellid_key`)
+```ts
+interface ApInfo {
+  bssid: string; ssid: string | null; vendor: string | null;
+  channel: number | null; freq_mhz: number | null; signal: number | null;
+  security: string | null; first_seen: number; last_seen: number;
+  lat: number | null; lon: number | null;   // from Wigle when resolved
+}
+interface TowerInfo {
+  lat: number; lon: number; radio: string | null; mcc: number | null;
+  mnc: number | null; cid: number | null; range_m: number | null;
+  samples: number | null;
+}
+```
+### Settings gains: `wigle_api_name`, `wigle_api_token`, `opencellid_key` (all optional strings; free accounts: wigle.net + opencellid.org)
+### MCP: new tool `wifi_aps`

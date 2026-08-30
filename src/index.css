@@ -90,3 +90,108 @@ body {
 .animate-toastin {
   animation: toastin 0.16s ease-out;
 }
+
+/* ── Leaflet (Wardrive map) — dark forensic theme ───────────────────────── */
+
+.leaflet-container {
+  background: #0c0c0e; /* near zinc-950, blends with tile edges */
+  font-family: inherit;
+}
+
+/* Neutralize the default white divIcon frame */
+.ns-marker {
+  background: transparent;
+  border: none;
+}
+
+/* AP dot: cyan core with an emerald ring for located APs */
+.ns-ap-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: #22d3ee; /* cyan-400 */
+  border: 1.5px solid #0891b2; /* cyan-600 */
+  box-shadow:
+    0 0 0 3px rgba(16, 185, 129, 0.35), /* emerald-400 ring */
+    0 0 12px rgba(34, 211, 238, 0.65);
+}
+
+/* Fallback styling for APs that would render unlocated (no coords = not on map,
+   kept for completeness/symmetry with the icon helper) */
+.ns-ap-dot.ns-unlocated {
+  background: #52525b; /* zinc-600 */
+  border-color: #3f3f46; /* zinc-700 */
+  box-shadow: none;
+}
+
+/* Cell-tower marker: violet ▲ */
+.ns-tower {
+  color: #a78bfa; /* violet-400 */
+  font-size: 15px;
+  line-height: 15px;
+  text-shadow: 0 0 10px rgba(167, 139, 250, 0.9);
+  transform: translate(-1px, -7px); /* tip roughly on the coordinate */
+}
+
+/* Row-click marker flash: two quick scale pulses of the dot */
+@keyframes ns-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.9);
+  }
+}
+.ns-marker-pulse .ns-ap-dot {
+  animation: ns-pulse 0.55s ease-in-out 2;
+}
+
+/* Dark popups + controls */
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: #18181b; /* zinc-900 */
+  color: #e4e4e7; /* zinc-200 */
+  border: 1px solid #3f3f46; /* zinc-700 */
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+}
+.leaflet-popup-content {
+  margin: 10px 12px;
+  font-size: 11px;
+  line-height: 1.55;
+  min-width: 190px;
+}
+.leaflet-popup-content b {
+  color: #fafafa; /* zinc-50 */
+}
+.leaflet-container a.leaflet-popup-close-button {
+  color: #71717a; /* zinc-500 */
+}
+.leaflet-container a.leaflet-popup-close-button:hover {
+  color: #e4e4e7;
+}
+.leaflet-bar a,
+.leaflet-bar a:hover {
+  background: #18181b;
+  color: #d4d4d8;
+  border-bottom: 1px solid #27272a;
+}
+.leaflet-bar a:hover {
+  background: #27272a;
+}
+.leaflet-control-attribution {
+  background: rgba(9, 9, 11, 0.75) !important;
+  color: #71717a !important;
+  font-size: 10px;
+}
+.leaflet-control-attribution a {
+  color: #a1a1aa !important;
+}
+
+/* <details> summary without the default disclosure triangle (custom chevron) */
+.ns-details > summary {
+  list-style: none;
+}
+.ns-details > summary::-webkit-details-marker {
+  display: none;
+}

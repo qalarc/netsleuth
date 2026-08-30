@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   Check,
   FileUp,
+  KeyRound,
   LoaderCircle,
   Play,
   Radio,
@@ -54,6 +55,18 @@ const inputCls =
   "w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-200 outline-none transition-colors placeholder:text-zinc-600 focus:border-cyan-400/60";
 
 const fieldLabel = "label mb-1.5 block";
+
+/** Fallback base when settings could not be loaded (backend offline) —
+ *  ensures every `AppSettings` we build carries the full field set. */
+const DEFAULT_SETTINGS: AppSettings = {
+  gateway_mac: null,
+  dns_doh_note: true,
+  retention_days: 0,
+  auto_resume: false,
+  wigle_api_name: null,
+  wigle_api_token: null,
+  opencellid_key: null,
+};
 
 /** Shared Start/Stop row for the ssh/local tabs. */
 function ActionRow({
@@ -123,6 +136,12 @@ export function Capture() {
   const [retentionDraft, setRetentionDraft] = useState("0");
   const [savingSettings, setSavingSettings] = useState(false);
 
+  // v1.4 OSINT key drafts (Wigle + OpenCellID).
+  const [wigleNameDraft, setWigleNameDraft] = useState("");
+  const [wigleTokenDraft, setWigleTokenDraft] = useState("");
+  const [ocidKeyDraft, setOcidKeyDraft] = useState("");
+  const [savingOsint, setSavingOsint] = useState(false);
+
   // 1-second heartbeat so uptime/packet counters stay fresh.
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => {
@@ -171,6 +190,9 @@ export function Capture() {
         setSettings(s);
         setGatewayDraft(s.gateway_mac ?? "");
         setRetentionDraft(String(s.retention_days));
+        setWigleNameDraft(s.wigle_api_name ?? "");
+        setWigleTokenDraft(s.wigle_api_token ?? "");
+        setOcidKeyDraft(s.opencellid_key ?? "");
       }
     })();
     return () => {
@@ -249,7 +271,10 @@ export function Capture() {
 
   const saveSettings = async () => {
     setSavingSettings(true);
+    // Spread the loaded settings so fields owned by other cards (the v1.4
+    // OSINT keys) survive this save.
     const next: AppSettings = {
+      ...(settings ?? DEFAULT_SETTINGS),
       gateway_mac: gatewayDraft.trim().toLowerCase() || null,
       dns_doh_note: settings?.dns_doh_note ?? true,
       retention_days: Math.max(0, Math.floor(Number(retentionDraft) || 0)),
@@ -260,6 +285,23 @@ export function Capture() {
     if (r !== undefined) {
       setSettings(next);
       toast("Settings saved", "success");
+    }
+  };
+
+  /** v1.4 — persist the OSINT keys, preserving every other setting. */
+  const saveOsint = async () => {
+    setSavingOsint(true);
+    const next: AppSettings = {
+      ...(settings ?? DEFAULT_SETTINGS),
+      wigle_api_name: wigleNameDraft.trim() || null,
+      wigle_api_token: wigleTokenDraft.trim() || null,
+      opencellid_key: ocidKeyDraft.trim() || null,
+    };
+    const r = await api.saveSettings(next);
+    setSavingOsint(false);
+    if (r !== undefined) {
+      setSettings(next);
+      toast("OSINT keys saved", "success");
     }
   };
 
@@ -584,6 +626,93 @@ export function Capture() {
             className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-500 disabled:opacity-50"
           >
             {savingSettings ? "Saving…" : "Save settings"}
+          </button>
+        </div>
+      </section>
+
+      {/* OSINT API keys (v1.4 wardrive) */}
+      <section className="rounded-xl border border-zinc-800/80 bg-zinc-900/60 transition-colors hover:border-zinc-700">
+        <div className="border-b border-zinc-800/60 px-4 py-2.5">
+          <span className="label flex items-center gap-2">
+            <KeyRound className="h-3.5 w-3.5" /> OSINT API keys (free accounts)
+          </span>
+        </div>
+        <div className="grid gap-4 p-4 sm:grid-cols-2">
+          <div>
+            <label className={fieldLabel} htmlFor="set-wigle-name">Wigle API name</label>
+            <input
+              id="set-wigle-name"
+              value={wigleNameDraft}
+              onChange={(e) => setWigleNameDraft(e.target.value)}
+              placeholder="wigle username"
+              autoComplete="off"
+              className={inputCls}
+            />
+            <p className="mt-1 text-[11px] text-zinc-500">
+              Your wigle.net account name — authenticates AP geolocation for the
+              Wardrive view.
+            </p>
+          </div>
+          <div>
+            <label className={fieldLabel} htmlFor="set-wigle-token">Wigle API token</label>
+            <input
+              id="set-wigle-token"
+              type="password"
+              value={wigleTokenDraft}
+              onChange={(e) => setWigleTokenDraft(e.target.value)}
+              placeholder="API key from your account page"
+              autoComplete="off"
+              className={inputCls}
+            />
+            <p className="mt-1 text-[11px] text-zinc-500">
+              Generated on wigle.net (account → API) — pairs with the name above.
+            </p>
+          </div>
+          <div>
+            <label className={fieldLabel} htmlFor="set-ocid">OpenCellID key</label>
+            <input
+              id="set-ocid"
+              value={ocidKeyDraft}
+              onChange={(e) => setOcidKeyDraft(e.target.value)}
+              placeholder="free API token"
+              autoComplete="off"
+              className={inputCls}
+            />
+            <p className="mt-1 text-[11px] text-zinc-500">
+              Cell-tower lookups for the Wardrive “towers around me” panel.
+            </p>
+          </div>
+          <div className="flex items-end pb-0.5">
+            <p className="text-[11px] leading-relaxed text-zinc-500">
+              Free accounts:{" "}
+              <button
+                type="button"
+                onClick={() => void api.openHost("wigle.net")}
+                className="text-cyan-400 underline decoration-cyan-400/40 underline-offset-2 transition-colors hover:text-cyan-300"
+              >
+                wigle.net
+              </button>{" "}
+              /{" "}
+              <button
+                type="button"
+                onClick={() => void api.openHost("opencellid.org")}
+                className="text-cyan-400 underline decoration-cyan-400/40 underline-offset-2 transition-colors hover:text-cyan-300"
+              >
+                opencellid.org
+              </button>{" "}
+              — free. Keys are stored locally only and sent nowhere except the
+              respective lookup API.
+            </p>
+          </div>
+        </div>
+        <div className="border-t border-zinc-800/60 px-4 py-3">
+          <button
+            type="button"
+            onClick={() => void saveOsint()}
+            disabled={savingOsint}
+            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-500 disabled:opacity-50"
+          >
+            {savingOsint ? "Saving…" : "Save keys"}
           </button>
         </div>
       </section>

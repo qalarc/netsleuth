@@ -195,6 +195,12 @@ export interface AppSettings {
   retention_days: number;
   /** v1.1 — start the most-recent source once on app launch */
   auto_resume: boolean;
+  /** v1.4 — Wigle.net account name for BSSID geolocation (free account) */
+  wigle_api_name: string | null;
+  /** v1.4 — Wigle.net API token (generated on the account page) */
+  wigle_api_token: string | null;
+  /** v1.4 — OpenCellID API key for cell-tower lookups (free account) */
+  opencellid_key: string | null;
 }
 
 /** Event `live-update` — emitted every 1000 ms while running */
@@ -284,3 +290,44 @@ export interface SecuritySummary {
 export interface AlertsEvent {
   new: AlertInfo[];
 }
+
+/* ── v1.4 (wardrive + OSINT) ──────────────────────────────────────────── */
+
+/** §22/§23 — one known wireless access point (upserted `aps` table rows). */
+export interface ApInfo {
+  bssid: string;
+  /** null = hidden/blank SSID */
+  ssid: string | null;
+  /** OUI lookup result, when known */
+  vendor: string | null;
+  channel: number | null;
+  freq_mhz: number | null;
+  /** dBm, roughly −100..0 (stronger = closer to 0) */
+  signal: number | null;
+  /** e.g. "WPA2", "WPA3", "" for open — raw from the scan */
+  security: string | null;
+  /** unix s */
+  first_seen: number;
+  /** unix s */
+  last_seen: number;
+  /** from the Wigle.net DB when resolved, else null */
+  lat: number | null;
+  lon: number | null;
+}
+
+/** §25 — one OpenCellID tower record near a point. */
+export interface TowerInfo {
+  lat: number;
+  lon: number;
+  /** GSM | UMTS | LTE | NR | CDMA … */
+  radio: string | null;
+  mcc: number | null;
+  mnc: number | null;
+  cid: number | null;
+  /** estimated coverage radius */
+  range_m: number | null;
+  samples: number | null;
+}
+
+/** §24 — `wigle_geolocate` result: [newly-located count, error message]. */
+export type WigleResult = [number, string | null];

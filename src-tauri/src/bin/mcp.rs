@@ -130,6 +130,8 @@ fn tool_defs() -> Value {
             json!({ "hours": { "type": "number" }, "include_dismissed": { "type": "boolean" } })),
         def("heatmap", "Activity heatmap cells (day x hour-of-day, local time) for the last N days (default 7).",
             json!({ "days": { "type": "number" } })),
+        def("wifi_aps", "WiFi APs discovered by wardrive scans: BSSID, SSID, vendor, signal, channel, security, Wigle geolocation (lat/lon) when resolved.",
+            json!({ "limit": { "type": "number" } })),
     ])
 }
 
@@ -180,6 +182,7 @@ fn call_tool(db_path: &str, params: &Value) -> Result<String, String> {
         "timeline" => timeline(&conn, n("hours", 24), s("mac").as_deref())?,
         "security_alerts" => alerts(&conn, n("hours", 24), args.get("include_dismissed").and_then(|v| v.as_bool()).unwrap_or(false))?,
         "heatmap" => heatmap(&conn, n("days", 7))?,
+        "wifi_aps" => wifi_aps(&conn, n("limit", 200).min(1000))?,
         other => return Err(format!("unknown tool: {other}")),
     };
     Ok(out)
@@ -443,5 +446,28 @@ fn heatmap(conn: &Connection, days: i64) -> Result<String, String> {
         "SELECT hour, SUM(up+down) FROM device_hourly WHERE hour >= ?1 GROUP BY hour",
         &[&since],
         |r| Ok(json!({ "hour_utc": r.get::<_, i64>(0)?, "bytes": r.get::<_, i64>(1)? })),
+    )
+}
+
+fn wifi_aps(conn: &Connection, limit: i64) -> Result<String, String> {
+    rows_to_json(
+        conn,
+        "SELECT bssid, ssid, vendor, channel, freq_mhz, signal, security, first_seen, last_seen, lat, lon \
+         FROM aps ORDER BY last_seen DESC LIMIT ?1",
+        &[&limit],
+        |r| {
+            Ok(json!({
+                "bssid": r.get::<_, String>(0)?,
+                "ssid": r.get::<_, Option<String>>(1)?,
+                "vendor": r.get::<_, Option<String>>(2)?,
+                "channel": r.get::<_, Option<i64>>(3)?,
+                "signal": r.get::<_, Option<i64>>(5)?,
+                "security": r.get::<_, Option<String>>(6)?,
+                "first_seen": r.get::<_, i64>(7)?,
+                "last_seen": r.get::<_, i64>(8)?,
+                "lat": r.get::<_, Option<f64>>(9)?,
+                "lon": r.get::<_, Option<f64>>(10)?,
+            }))
+        },
     )
 }
