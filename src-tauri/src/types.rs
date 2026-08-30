@@ -162,12 +162,33 @@ pub struct FlowInfo {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct PortStat {
+    pub port: u16,
+    pub proto: String,
+    pub bytes_up: u64,
+    pub bytes_down: u64,
+    pub flows: u64, // distinct remote addresses contacted on this port
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProtoStat {
+    pub proto: String,
+    pub bytes_up: u64,
+    pub bytes_down: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct DeviceDetail {
     pub device: DeviceInfo,
     pub timeline: Vec<TimelinePoint>,
     pub top_sites: Vec<SiteInfo>,
     pub recent_dns: Vec<ActivityEvent>,
     pub flows: Vec<FlowInfo>,
+    // v1.3 additions (aggregated from persisted flows + hourly rollups)
+    pub ports: Vec<PortStat>,
+    pub protocols: Vec<ProtoStat>,
+    pub distinct_ips: u64,
+    pub peak_hour: Option<TimelinePoint>,
 }
 
 #[derive(Debug, Clone, Serialize)]

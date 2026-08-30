@@ -770,3 +770,73 @@ pub fn get_recent_sources(conn: &Connection) -> Vec<serde_json::Value> {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
+
+// ---------------------------------------------------------------------------
+// v1.3 device aggregates
+// ---------------------------------------------------------------------------
+
+pub fn port_stats(conn: &Connection, mac: &str, limit: usize) -> Vec<crate::types::PortStat> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT port, proto, SUM(up), SUM(down), COUNT(DISTINCT remote_ip)
+         FROM flows WHERE mac = ?1 GROUP BY port, proto
+         ORDER BY SUM(up)+SUM(down) DESC LIMIT ?2",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map(params![mac, limit as i64], |r| {
+        Ok(crate::types::PortStat {
+            port: r.get::<_, i64>(0)? as u16,
+            proto: r.get(1)?,
+            bytes_up: r.get::<_, i64>(2)? as u64,
+            bytes_down: r.get::<_, i64>(3)? as u64,
+            flows: r.get::<_, i64>(4)? as u64,
+        })
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
+pub fn proto_stats(conn: &Connection, mac: &str) -> Vec<crate::types::ProtoStat> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT proto, SUM(up), SUM(down) FROM flows WHERE mac = ?1 GROUP BY proto",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map(params![mac], |r| {
+        Ok(crate::types::ProtoStat {
+            proto: r.get(0)?,
+            bytes_up: r.get::<_, i64>(1)? as u64,
+            bytes_down: r.get::<_, i64>(2)? as u64,
+        })
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
+pub fn distinct_ips(conn: &Connection, mac: &str) -> u64 {
+    conn.query_row(
+        "SELECT COUNT(DISTINCT remote_ip) FROM flows WHERE mac = ?1",
+        params![mac],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|c| c as u64)
+    .unwrap_or(0)
+}
+
+pub fn peak_hour(conn: &Connection, mac: &str) -> Option<TimelinePoint> {
+    conn.query_row(
+        "SELECT hour, up, down FROM device_hourly WHERE mac = ?1
+         ORDER BY (up + down) DESC LIMIT 1",
+        params![mac],
+        |r| {
+            Ok(TimelinePoint {
+                ts: r.get(0)?,
+                bytes_up: r.get::<_, i64>(1)? as u64,
+                bytes_down: r.get::<_, i64>(2)? as u64,
+            })
+        },
+    )
+    .ok()
+}

@@ -108,6 +108,16 @@ netsleuth/
 └── CONTRACT.md           # frozen backend ⇄ frontend API contract
 ```
 
+## MCP server for AI agents (v0.3.0)
+
+`netsleuth-mcp` (built alongside the app) is a read-only Model Context
+Protocol server over the same SQLite DB — let your agents review your
+network data: `status`, `devices`, `device_detail`, `sites`,
+`search_sites`, `events`, `timeline`, `security_alerts`, `heatmap`.
+Registered in the qalcode/opencode MCP config as `netsleuth`; safe to run
+while the app is open (WAL). Device detail is now a full-page view with
+port/protocol/IP aggregates.
+
 ## Security heuristics (v0.2.0)
 
 Mild malware detection, evaluated every 30 s while capturing: C2-style

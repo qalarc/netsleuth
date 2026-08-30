@@ -255,3 +255,21 @@ capturing.
 - `raw_ip` (low) — >10 MB to unresolved raw IPs on non-standard ports
 - `inbound` (low) — download-heavy flow from a remote ephemeral port (possible unsolicited inbound / P2P)
 - `blocklist` (high) — match in `<app-data>/blocklist.txt` (domain suffixes or exact IPs, `#` comments)
+
+---
+
+## Additions — v1.3 (richer device detail + MCP)
+
+### DeviceDetail gains
+```ts
+ports: PortStat[]          // top 12 remote ports: { port, proto, bytes_up, bytes_down, flows }
+protocols: ProtoStat[]     // [{ proto: "tcp"|"udp"|"other", bytes_up, bytes_down }]
+distinct_ips: number;      // distinct remote addresses ever contacted
+peak_hour: TimelinePoint | null;   // busiest hour by up+down
+```
+
+### MCP server (separate binary `netsleuth-mcp`)
+Stdio JSON-RPC MCP server, READ-ONLY access to the same SQLite DB, for AI
+agents. Tools: `status`, `devices`, `device_detail`, `sites`, `search_sites`,
+`events`, `timeline`, `security_alerts`, `heatmap`. DB path: argv[1] or
+`NETSLEUTH_DB` env or the default app-data path.

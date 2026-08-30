@@ -140,6 +140,22 @@ export interface DashboardSummary {
   status: Status;
 }
 
+/** v1.3 `get_device_detail` — per-remote-port aggregate. */
+export interface PortStat {
+  port: number;
+  proto: "tcp" | "udp" | "other";
+  bytes_up: number;
+  bytes_down: number;
+  flows: number;
+}
+
+/** v1.3 `get_device_detail` — per-transport-protocol aggregate. */
+export interface ProtoStat {
+  proto: "tcp" | "udp" | "other";
+  bytes_up: number;
+  bytes_down: number;
+}
+
 /** §7 `get_device_detail` */
 export interface DeviceDetail {
   device: DeviceInfo;
@@ -151,6 +167,14 @@ export interface DeviceDetail {
   recent_dns: ActivityEvent[];
   /** last 50 active/recent flows */
   flows: FlowInfo[];
+  /** v1.3 — top 12 remote ports by bytes */
+  ports: PortStat[];
+  /** v1.3 — bytes per transport protocol */
+  protocols: ProtoStat[];
+  /** v1.3 — distinct remote addresses ever contacted */
+  distinct_ips: number;
+  /** v1.3 — busiest hour by up+down; null when no traffic */
+  peak_hour: TimelinePoint | null;
 }
 
 /** §12 `get_heatmap` — activity by hour-of-day */

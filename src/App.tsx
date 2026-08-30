@@ -294,22 +294,10 @@ function Sidebar() {
   );
 }
 
-function DeviceDetailOverlay({ mac }: { mac: string }) {
-  const { closeDevice } = useStore();
-  return (
-    <>
-      <div className="fixed inset-0 z-40 bg-black/60" onClick={closeDevice} aria-hidden />
-      <div className="animate-slidein fixed inset-y-0 right-0 z-50 flex w-[min(880px,calc(100vw-2rem))] flex-col border-l border-zinc-800 bg-zinc-950 shadow-2xl">
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <DeviceDetail mac={mac} />
-        </div>
-      </div>
-    </>
-  );
-}
-
 function Shell() {
   const { view, selectedMac, backendOnline } = useStore();
+  // A "device" view without a selection (should not happen) falls back to list.
+  const page: View = view === "device" && !selectedMac ? "devices" : view;
   return (
     <div className="flex h-screen overflow-hidden bg-zinc-950 text-zinc-200">
       <Sidebar />
@@ -321,15 +309,18 @@ function Shell() {
             live data.
           </div>
         ) : null}
-        <div className="mx-auto max-w-[1400px] p-5">
-          {view === "dashboard" ? <Dashboard /> : null}
-          {view === "devices" ? <Devices /> : null}
-          {view === "sites" ? <Sites /> : null}
-          {view === "security" ? <Security /> : null}
-          {view === "history" ? <History /> : null}
-          {view === "capture" ? <Capture /> : null}
-        </div>
-        {selectedMac ? <DeviceDetailOverlay mac={selectedMac} /> : null}
+        {view === "device" && selectedMac ? (
+          <DeviceDetail mac={selectedMac} />
+        ) : (
+          <div className="mx-auto max-w-[1400px] p-5">
+            {page === "dashboard" ? <Dashboard /> : null}
+            {page === "devices" ? <Devices /> : null}
+            {page === "sites" ? <Sites /> : null}
+            {page === "security" ? <Security /> : null}
+            {page === "history" ? <History /> : null}
+            {page === "capture" ? <Capture /> : null}
+          </div>
+        )}
       </main>
       <Toasts />
     </div>

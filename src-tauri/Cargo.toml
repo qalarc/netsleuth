@@ -1,6 +1,6 @@
 [package]
 name = "netsleuth"
-version = "0.2.0"
+version = "0.3.0"
 description = "NetSleuth — Network Traffic Investigator. Tauri app that monitors router traffic per device and site."
 authors = ["fivelidz"]
 license = "MIT"
@@ -10,6 +10,14 @@ edition = "2021"
 # The `_lib` suffix is necessary to make the lib name unique vs the bin name.
 name = "netsleuth_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "netsleuth"
+path = "src/main.rs"
+
+[[bin]]
+name = "netsleuth-mcp"
+path = "src/bin/mcp.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

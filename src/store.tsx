@@ -39,6 +39,7 @@ import type {
 
 export type View =
   | "dashboard"
+  | "device"
   | "devices"
   | "sites"
   | "security"
@@ -60,10 +61,12 @@ export interface ToastItem {
 
 export interface AppStore {
   view: View;
+  /** Switch views; leaving the device page drops the device selection. */
   setView: (v: View) => void;
   selectedMac: string | null;
-  /** Deep-link: switches to the Devices view and opens the slide-over. */
+  /** Deep-link: opens the full-page device view for `mac`. */
   openDevice: (mac: string) => void;
+  /** Leaves the device page, returning to the view we came from. */
   closeDevice: () => void;
 
   status: Status | null;
@@ -135,8 +138,10 @@ export function useStore(): AppStore {
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [view, setView] = useState<View>("dashboard");
+  const [view, setViewRaw] = useState<View>("dashboard");
   const [selectedMac, setSelectedMac] = useState<string | null>(null);
+  /** The view the device page's ← Back button returns to. */
+  const returnViewRef = useRef<View>("devices");
 
   const [status, setStatus] = useState<Status | null>(null);
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
@@ -338,12 +343,31 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(iv);
   }, [refreshSecurity]);
 
-  const openDevice = useCallback((mac: string) => {
-    setView("devices");
-    setSelectedMac(mac);
+  // Navigation — the device page is full-page (v1.3), so `openDevice`
+  // remembers where we came from and Back (closeDevice) returns there.
+  // Regular sidebar navigation both drops any selection and becomes the new
+  // Back target.
+  const setView = useCallback((v: View) => {
+    if (v !== "device") {
+      returnViewRef.current = v;
+      setSelectedMac(null);
+    }
+    setViewRaw(v);
   }, []);
 
-  const closeDevice = useCallback(() => setSelectedMac(null), []);
+  const openDevice = useCallback(
+    (mac: string) => {
+      if (view !== "device") returnViewRef.current = view;
+      setSelectedMac(mac);
+      setView("device");
+    },
+    [view, setView],
+  );
+
+  const closeDevice = useCallback(() => {
+    setSelectedMac(null);
+    setViewRaw(returnViewRef.current);
+  }, []);
 
   const value = useMemo<AppStore>(
     () => ({

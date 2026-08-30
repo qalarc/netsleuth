@@ -124,3 +124,62 @@ export function truncateMiddle(s: string, max = 40): string {
   const edge = Math.max(4, Math.floor((max - 1) / 2));
   return `${s.slice(0, edge)}…${s.slice(s.length - edge)}`;
 }
+
+/** Common port → service hint (forensic quick-read, contract v1.3 detail page). */
+const PORT_SERVICES: Record<number, string> = {
+  20: "FTP data",
+  21: "FTP",
+  22: "SSH",
+  23: "Telnet",
+  25: "SMTP",
+  53: "DNS",
+  67: "DHCP",
+  68: "DHCP",
+  80: "HTTP",
+  110: "POP3",
+  123: "NTP",
+  143: "IMAP",
+  161: "SNMP",
+  389: "LDAP",
+  443: "HTTPS",
+  445: "SMB",
+  465: "SMTPS",
+  500: "IPsec IKE",
+  522: "XMPP",
+  587: "SMTP submit",
+  853: "DoT",
+  993: "IMAPS",
+  995: "POP3S",
+  1080: "SOCKS",
+  1194: "OpenVPN",
+  1701: "L2TP",
+  1723: "PPTP",
+  1900: "SSDP",
+  2083: "cPanel",
+  3478: "STUN",
+  3479: "TURN",
+  4500: "IPsec NAT-T",
+  5060: "SIP",
+  5061: "SIP-TLS",
+  5222: "XMPP",
+  5228: "GCM",
+  5353: "mDNS",
+  5432: "PostgreSQL",
+  5672: "AMQP",
+  6379: "Redis",
+  8080: "HTTP alt",
+  8443: "HTTPS alt",
+  8883: "MQTTS",
+  9001: "Tor",
+  9030: "Tor",
+  9050: "Tor SOCKS",
+  19305: "FaceTime relay",
+  19306: "FaceTime relay",
+  32400: "Plex",
+  51820: "WireGuard",
+};
+
+/** "443" → "HTTPS"; null when the port has no known service name. */
+export function portService(port: number): string | null {
+  return PORT_SERVICES[port] ?? null;
+}

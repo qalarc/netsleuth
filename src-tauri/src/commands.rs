@@ -449,12 +449,33 @@ pub fn get_device_detail(state: State<'_, AppState>, mac: String, hours: i64) ->
         device.device_type = device_type_hint(device.hostname.as_deref(), device.vendor.as_deref());
     }
 
+    let ports = app.store.query({
+        let m = mac.clone();
+        move |c| store::port_stats(c, &m, 12)
+    });
+    let protocols = app.store.query({
+        let m = mac.clone();
+        move |c| store::proto_stats(c, &m)
+    });
+    let distinct = app.store.query({
+        let m = mac.clone();
+        move |c| store::distinct_ips(c, &m)
+    });
+    let peak = app.store.query({
+        let m = mac.clone();
+        move |c| store::peak_hour(c, &m)
+    });
+
     DeviceDetail {
         device,
         timeline,
         top_sites,
         recent_dns,
         flows,
+        ports,
+        protocols,
+        distinct_ips: distinct,
+        peak_hour: peak,
     }
 }
 
