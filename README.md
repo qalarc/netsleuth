@@ -25,6 +25,14 @@ analytics view — all stored locally in SQLite. No cloud, no telemetry.
 └───────────────────────────────────────────────────────────────────┘
 ```
 
+## Screenshot
+
+![NetSleuth dashboard](docs/screenshot.png)
+
+*(Fresh-install view — no capture configured yet. Once a capture source is
+running, this dashboard fills with the live device list, site accounting and
+security alerts.)*
+
 ## Features
 
 - **Router-wide capture** via SSH: runs `ssh user@router tcpdump -i br-lan -U -w -`
